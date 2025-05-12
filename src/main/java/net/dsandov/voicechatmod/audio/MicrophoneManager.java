@@ -1,4 +1,3 @@
-// File: src/main/java/net/dsandov/voicechatmod/audio/MicrophoneManager.java
 package net.dsandov.voicechatmod.audio;
 
 import net.dsandov.voicechatmod.VoiceChatMod; // For logging
@@ -17,6 +16,15 @@ public class MicrophoneManager {
 
     // Thread for actually reading data from the microphone
     private Thread captureThread;
+
+    // --- START OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
+    /**
+     * Temporary constant to specify a preferred microphone for testing.
+     * To revert to default microphone selection behavior, set this to "" (empty string) or null.
+     * This makes it easy to find and change/remove this specific microphone preference later.
+     */
+    private static final String HARDCODED_TEST_MICROPHONE_NAME = "Microphone (HD Pro Webcam C920)";
+    // --- END OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
 
     /**
      * Constructor for MicrophoneManager.
@@ -49,6 +57,7 @@ public class MicrophoneManager {
 
     /**
      * Initializes the microphone by trying to find and open a TargetDataLine.
+     * It will first attempt to use the HARDCODED_TEST_MICROPHONE_NAME if specified.
      *
      * @return true if initialization was successful, false otherwise.
      */
@@ -58,26 +67,68 @@ public class MicrophoneManager {
             return true;
         }
 
-        try {
-            // Get a TargetDataLine that matches the specified AudioFormat.
-            // This will attempt to get the system's default microphone supporting the format.
-            DataLine.Info dataLineInfo = new DataLine.Info(TargetDataLine.class, audioFormat);
+        // Use the centrally defined preferred microphone name
+        final String effectivePreferredMicName = HARDCODED_TEST_MICROPHONE_NAME;
 
-            // Check if any microphone supports this format
-            if (!AudioSystem.isLineSupported(dataLineInfo)) {
-                VoiceChatMod.LOGGER.error("Audio format not supported by any available microphone line.");
-                VoiceChatMod.LOGGER.error("Format details: {}", audioFormat.toString());
-                // You might want to try other formats or allow user selection here in a more advanced version.
-                return false;
+        try {
+            DataLine.Info dataLineInfo = new DataLine.Info(TargetDataLine.class, audioFormat);
+            Mixer.Info selectedMixerInfo = null;
+
+            // Attempt to find and use the hardcoded preferred microphone
+            if (effectivePreferredMicName != null && !effectivePreferredMicName.isEmpty()) {
+                VoiceChatMod.LOGGER.info("Attempting to find hardcoded test microphone: '{}'", effectivePreferredMicName);
+                boolean foundPreferred = false;
+                for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
+                    if (mixerInfo.getName().equals(effectivePreferredMicName)) {
+                        Mixer mixer = AudioSystem.getMixer(mixerInfo);
+                        if (mixer.isLineSupported(dataLineInfo)) { // Check if this specific mixer supports the line and format
+                            selectedMixerInfo = mixerInfo;
+                            VoiceChatMod.LOGGER.info("Found preferred microphone and it supports the required format: {}", mixerInfo.getName());
+                            foundPreferred = true;
+                            break;
+                        } else {
+                            VoiceChatMod.LOGGER.warn("Preferred microphone '{}' found, but it does NOT support the required audio format ({}).", effectivePreferredMicName, audioFormat.toString());
+                            // Continue searching in case of duplicate names but different capabilities (rare)
+                        }
+                    }
+                }
+                if (!foundPreferred && selectedMixerInfo == null) { // Check if preferred was specified but not found or not suitable
+                    VoiceChatMod.LOGGER.warn("Hardcoded preferred microphone '{}' was not found or is not suitable. Will attempt default.", effectivePreferredMicName);
+                }
+            } else {
+                VoiceChatMod.LOGGER.info("No hardcoded test microphone name set. Will attempt default system microphone line.");
             }
 
-            this.targetDataLine = (TargetDataLine) AudioSystem.getLine(dataLineInfo);
-            VoiceChatMod.LOGGER.info("TargetDataLine obtained for format: {}", audioFormat.toString());
+
+            // Get the TargetDataLine
+            if (selectedMixerInfo != null) {
+                // Get line from the specifically selected mixer
+                Mixer mixer = AudioSystem.getMixer(selectedMixerInfo);
+                this.targetDataLine = (TargetDataLine) mixer.getLine(dataLineInfo);
+                VoiceChatMod.LOGGER.info("Using specific microphone: {}", selectedMixerInfo.getName());
+            } else {
+                // Fallback to default system line if no preferred mic is set, found, or suitable
+                VoiceChatMod.LOGGER.info("Attempting to get default system microphone line (fallback).");
+                if (!AudioSystem.isLineSupported(dataLineInfo)) {
+                    VoiceChatMod.LOGGER.error("Audio format not supported by any available microphone line (default path).");
+                    VoiceChatMod.LOGGER.error("Format details: {}", audioFormat.toString());
+                    return false;
+                }
+                this.targetDataLine = (TargetDataLine) AudioSystem.getLine(dataLineInfo);
+                VoiceChatMod.LOGGER.info("Using default system microphone line.");
+            }
+
+            VoiceChatMod.LOGGER.info("TargetDataLine obtained. Line Info: {}. Audio Format: {}", this.targetDataLine.getLineInfo().toString(), audioFormat.toString());
+            // The line is obtained but not yet open. It will be opened in startCapture().
             return true;
 
         } catch (LineUnavailableException e) {
-            VoiceChatMod.LOGGER.error("Failed to get a TargetDataLine: Line unavailable.", e);
-            this.targetDataLine = null; // Ensure it's null if failed
+            VoiceChatMod.LOGGER.error("Failed to get a TargetDataLine: Line unavailable. This can happen if another app is using the mic, it's disabled, or permissions are missing.", e);
+            this.targetDataLine = null;
+            return false;
+        } catch (IllegalArgumentException e) {
+            VoiceChatMod.LOGGER.error("Failed to get a TargetDataLine: Audio format parameters are not supported or line cannot be created with them.", e);
+            this.targetDataLine = null;
             return false;
         } catch (Exception e) {
             VoiceChatMod.LOGGER.error("An unexpected error occurred during microphone initialization.", e);
@@ -167,6 +218,7 @@ public class MicrophoneManager {
                 // Create a copy of the buffer if passing it to another thread or queue
                 // byte[] audioDataPacket = Arrays.copyOf(buffer, bytesRead);
                 // Send 'audioDataPacket' to the network module.
+                VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(buffer, bytesRead);
             } else if (bytesRead == -1) {
                 // End of stream, which shouldn't happen for a microphone unless it's closed.
                 VoiceChatMod.LOGGER.warn("Microphone line reported end of stream.");
