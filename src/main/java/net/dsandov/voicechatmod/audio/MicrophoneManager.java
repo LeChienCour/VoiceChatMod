@@ -10,12 +10,12 @@ public class MicrophoneManager {
     private TargetDataLine targetDataLine;
     // The format of the audio data we want to capture
     private AudioFormat audioFormat;
-
     // Flag to indicate if audio capture is currently active
     private volatile boolean isCapturing = false; // volatile as it might be accessed by multiple threads
-
     // Thread for actually reading data from the microphone
     private Thread captureThread;
+    // Audio Encoder
+    private IAudioEncoder audioEncoder;
 
     // --- START OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
     /**
@@ -32,6 +32,8 @@ public class MicrophoneManager {
      */
     public MicrophoneManager() {
         this.audioFormat = getDesiredAudioFormat();
+        // Initialize the encoder
+        this.audioEncoder = new PassthroughEncoder();
     }
 
     /**
@@ -66,15 +68,11 @@ public class MicrophoneManager {
             VoiceChatMod.LOGGER.info("MicrophoneManager already initialized and line is open.");
             return true;
         }
-
         // Use the centrally defined preferred microphone name
         final String effectivePreferredMicName = HARDCODED_TEST_MICROPHONE_NAME;
-
         try {
             DataLine.Info dataLineInfo = new DataLine.Info(TargetDataLine.class, audioFormat);
             Mixer.Info selectedMixerInfo = null;
-
-            // Attempt to find and use the hardcoded preferred microphone
             if (effectivePreferredMicName != null && !effectivePreferredMicName.isEmpty()) {
                 VoiceChatMod.LOGGER.info("Attempting to find hardcoded test microphone: '{}'", effectivePreferredMicName);
                 boolean foundPreferred = false;
@@ -88,7 +86,6 @@ public class MicrophoneManager {
                             break;
                         } else {
                             VoiceChatMod.LOGGER.warn("Preferred microphone '{}' found, but it does NOT support the required audio format ({}).", effectivePreferredMicName, audioFormat.toString());
-                            // Continue searching in case of duplicate names but different capabilities (rare)
                         }
                     }
                 }
@@ -208,21 +205,26 @@ public class MicrophoneManager {
             bytesRead = targetDataLine.read(buffer, 0, buffer.length);
 
             if (bytesRead > 0) {
-                // TODO: Process the captured audio data (buffer)
-                // For now, we just log that we read some data.
-                // In the next steps, this data would be:
-                // 1. (Optionally) Encoded using an audio codec.
-                // 2. Sent over the network (via AppSync).
-                VoiceChatMod.LOGGER.debug("Read {} bytes from microphone.", bytesRead);
+                VoiceChatMod.LOGGER.debug("Read {} raw bytes from microphone.", bytesRead);
 
-                // Create a copy of the buffer if passing it to another thread or queue
-                // byte[] audioDataPacket = Arrays.copyOf(buffer, bytesRead);
-                // Send 'audioDataPacket' to the network module.
-                VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(buffer, bytesRead);
+                // Create a precise copy of the data that was actually read
+                byte[] rawPcmData = new byte[bytesRead];
+                System.arraycopy(buffer, 0, rawPcmData, 0, bytesRead);
+
+                // Encode the raw PCM data
+                byte[] encodedData = this.audioEncoder.encode(rawPcmData); // Use the encoder
+
+                if (encodedData != null && encodedData.length > 0) {
+                    VoiceChatMod.LOGGER.debug("Encoded audio data: {} bytes.", encodedData.length);
+                    // Pass the encoded data to the loopback buffer (or network layer later)
+                    VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(encodedData, encodedData.length);
+                } else {
+                    VoiceChatMod.LOGGER.warn("Encoding produced null or empty data.");
+                }
+
             } else if (bytesRead == -1) {
-                // End of stream, which shouldn't happen for a microphone unless it's closed.
                 VoiceChatMod.LOGGER.warn("Microphone line reported end of stream.");
-                isCapturing = false; // Stop capturing
+                isCapturing = false;
                 break;
             }
         }

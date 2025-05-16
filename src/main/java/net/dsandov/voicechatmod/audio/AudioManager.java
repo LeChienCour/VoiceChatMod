@@ -10,9 +10,10 @@ public class AudioManager {
     private SourceDataLine sourceDataLine;
     // The format of the audio data we expect to play
     private AudioFormat audioFormat; // This should match the capture format
-
     // Flag to indicate if audio playback is currently possible/initialized
     private boolean isInitialized = false;
+    // Add a field for the audio decoder
+    private IAudioDecoder audioDecoder;
 
     /**
      * Constructor for AudioManager.
@@ -21,6 +22,8 @@ public class AudioManager {
     public AudioManager() {
         // Using a default format initially, can be made more flexible
         this.audioFormat = getPlaybackAudioFormat();
+        // Initialize the decoder
+        this.audioDecoder = new PassthroughDecoder();
     }
 
     /**
@@ -82,37 +85,43 @@ public class AudioManager {
     /**
      * Plays the given audio data.
      *
-     * @param audioData The byte array containing the audio data to play.
+     * @param encodedAudioData The byte array containing the audio data to play.
      * @param offset The starting offset in the byte array.
      * @param length The number of bytes to play from the array.
      */
-    public void playAudio(byte[] audioData, int offset, int length) {
+    public void playAudio(byte[] encodedAudioData, int offset, int length) {
         if (!isInitialized || this.sourceDataLine == null || !this.sourceDataLine.isOpen()) {
-            VoiceChatMod.LOGGER.warn("AudioManager not initialized or line closed. Cannot play audio.");
-            // Optionally, try to re-initialize
-            // if (!initialize()) return; 
+            VoiceChatMod.LOGGER.warn("AudioManager not initialized or line closed. Cannot play audio. isInitialized: {}, line null: {}, line open: {}",
+                    isInitialized, this.sourceDataLine == null, (this.sourceDataLine != null && this.sourceDataLine.isOpen()));
             return;
         }
 
-        if (audioData == null || length <= 0) {
-            VoiceChatMod.LOGGER.warn("Audio data is null or length is zero. Nothing to play.");
+        if (encodedAudioData == null || length <= 0) {
+            VoiceChatMod.LOGGER.warn("Encoded audio data is null or length is zero. Nothing to play.");
             return;
         }
 
+        // Create a precise copy of the encoded data chunk to decode
+        byte[] currentEncodedChunk = new byte[length];
+        System.arraycopy(encodedAudioData, offset, currentEncodedChunk, 0, length);
+
+        // Decode the audio data
+        byte[] pcmDataToPlay = this.audioDecoder.decode(currentEncodedChunk); // Use the decoder
+
+        if (pcmDataToPlay == null || pcmDataToPlay.length == 0) {
+            VoiceChatMod.LOGGER.warn("Decoding produced null or empty PCM data. Nothing to play.");
+            return;
+        }
+
+        VoiceChatMod.LOGGER.info("Attempting to play {} bytes of decoded PCM audio data.", pcmDataToPlay.length);
         try {
-            // Write data to the mixer via the SourceDataLine.
-            // This call will block until the data is written to the line's internal buffer.
-            int bytesWritten = sourceDataLine.write(audioData, offset, length);
+            int bytesWritten = sourceDataLine.write(pcmDataToPlay, 0, pcmDataToPlay.length);
             VoiceChatMod.LOGGER.debug("Wrote {} bytes to SourceDataLine for playback.", bytesWritten);
-
-            // If you are playing many small chunks and want to ensure they are sent to the mixer
-            // without waiting for the buffer to be full, you might call sourceDataLine.drain()
-            // after a series of writes, but be careful as drain() blocks until the buffer is empty.
-            // For continuous voice, just writing is usually fine as the line pulls data.
-
+            if (bytesWritten != pcmDataToPlay.length) {
+                VoiceChatMod.LOGGER.warn("Not all decoded bytes were written to SourceDataLine! Expected: {}, Actual: {}", pcmDataToPlay.length, bytesWritten);
+            }
         } catch (IllegalArgumentException e) {
-            // This can happen if the line is closed or data format is wrong, though we check isOpen.
-            VoiceChatMod.LOGGER.error("Illegal argument while writing to SourceDataLine (line might have been closed unexpectedly).", e);
+            VoiceChatMod.LOGGER.error("Illegal argument while writing decoded PCM to SourceDataLine.", e);
         }
     }
 

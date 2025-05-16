@@ -59,29 +59,22 @@ configurations {
 }
 
 dependencies {
-    // Minecraft and NeoForge dependencies
-    // Specify the version of Minecraft to use.
-    implementation "net.neoforged:neoforge:${neo_version}"
+    implementation "net.neoforged:neoforge:${neo_version}" // NeoForge
 
     // AWS SDK for Java v2 dependencies
-    // We use a Bill of Materials (BOM) to manage AWS SDK dependency versions.
-    // Replace '2.25.48' with the latest stable version of the AWS SDK BOM.
-    // You can find the latest version on Maven Central by searching for 'software.amazon.awssdk:bom'.
-    implementation platform('software.amazon.awssdk:bom:2.25.48') // Example version, use latest
+    implementation platform('software.amazon.awssdk:bom:2.25.48')
 
-    // AWS AppSync client dependency
-    // This module is required to interact with AWS AppSync.
-    implementation 'software.amazon.awssdk:appsync'
+    // Solo el núcleo del SDK.
+    implementation 'software.amazon.awssdk:sdk-core'
 
-    // The AWS SDK v2 will automatically bring in a compatible HTTP client.
-    // Common choices include 'url-connection-client' (default for simple cases)
-    // or 'apache-client' (more robust, add 'software.amazon.awssdk:apache-client' if needed explicitly)
-    // For now, we'll rely on the default behavior.
+    // Comentamos TODAS las demás dependencias específicas de AWS por ahora:
+    // implementation 'software.amazon.awssdk:regions'
+    // implementation 'software.amazon.awssdk:auth'
+    // implementation 'software.amazon.awssdk:url-connection-client'
+    // implementation 'software.amazon.awssdk:apache-client'
+    // implementation 'software.amazon.awssdk:appsync' // etc.
 
-    // Example optional mod dependency with JEI (kept from original template)
-    // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
-    // compileOnly "mezz.jei:jei-${mc_version}-neoforge-api:${jei_version}"
-    // localRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
+    implementation 'com.google.code.gson:gson:2.10.1'
 }
 
 tasks.withType(ProcessResources).configureEach {

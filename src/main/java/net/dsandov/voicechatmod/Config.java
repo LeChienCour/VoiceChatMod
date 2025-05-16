@@ -33,12 +33,20 @@ public class Config
             .defineInRange("defaultVolume", 0.7, 0.0, 1.0);
 
     private static final ModConfigSpec.ConfigValue<String> VOICE_SERVER_URL_SPEC = BUILDER
-            .comment("The URL of the voice chat server (e.g., your AWS AppSync WebSocket endpoint).")
-            .define("voiceServerUrl", "wss://example.appsync-realtime-api.us-east-1.amazonaws.com/graphql"); // Placeholder URL
+            .comment("The GraphQL API URL for the AWS AppSync voice server (e.g., https://<id>.appsync-api.<region>.amazonaws.com/graphql).")
+            .define("voiceServerUrl", "YOUR_APPSYNC_GRAPHQL_API_URL_HERE"); // Placeholder
+
+    private static final ModConfigSpec.ConfigValue<String> APPSYNC_API_KEY_SPEC = BUILDER
+            .comment("The API Key for AWS AppSync if API_KEY authentication is used.")
+            .define("appSyncApiKey", "YOUR_APPSYNC_API_KEY_HERE"); // Placeholder
 
     private static final ModConfigSpec.IntValue MAX_VOICE_DISTANCE_SPEC = BUILDER
             .comment("Maximum distance (in blocks) at which players can hear each other. Set to 0 for global chat (if server supports).")
             .defineInRange("maxVoiceDistance", 64, 0, 256); // Example range
+
+    private static final ModConfigSpec.ConfigValue<String> APPSYNC_API_REGION_SPEC = BUILDER
+            .comment("The AWS Region for the AppSync API (e.g., us-east-1).")
+            .define("appSyncApiRegion", "us-east-1");
 
     // The final configuration specification that NeoForge will use.
     // This MUST be registered in the main mod class (VoiceChatMod.java).
@@ -51,12 +59,13 @@ public class Config
     public static double defaultVolume;
     public static String voiceServerUrl;
     public static int maxVoiceDistance;
+    public static String appSyncApiKey;
+    public static String appSyncApiRegion;
 
     /**
      * This method is automatically called by NeoForge when a mod config file for this mod is loaded or reloaded.
      * It updates the static fields with the latest values from the configuration.
      *
-     * @param event The ModConfigEvent containing details about the loaded config.
      */
     private static boolean validateItemName(final Object obj)
     {
@@ -71,14 +80,18 @@ public class Config
             VoiceChatMod.LOGGER.info("Loading VoiceChatMod common configuration...");
             enableVoiceChat = ENABLE_VOICE_CHAT_SPEC.get();
             defaultVolume = DEFAULT_VOLUME_SPEC.get();
-            voiceServerUrl = VOICE_SERVER_URL_SPEC.get();
             maxVoiceDistance = MAX_VOICE_DISTANCE_SPEC.get();
+            voiceServerUrl = VOICE_SERVER_URL_SPEC.get();
+            appSyncApiKey = APPSYNC_API_KEY_SPEC.get();
+            appSyncApiRegion = APPSYNC_API_REGION_SPEC.get();
 
-            // Log loaded config values for verification (optional)
+
             VoiceChatMod.LOGGER.debug("Voice Chat Enabled: {}", enableVoiceChat);
             VoiceChatMod.LOGGER.debug("Default Volume: {}", defaultVolume);
-            VoiceChatMod.LOGGER.debug("Voice Server URL: {}", voiceServerUrl);
             VoiceChatMod.LOGGER.debug("Max Voice Distance: {}", maxVoiceDistance);
+            VoiceChatMod.LOGGER.debug("AppSync Server URL (Loaded): {}", voiceServerUrl);
+            VoiceChatMod.LOGGER.debug("AppSync API Region (Loaded): {}", appSyncApiRegion);
+            VoiceChatMod.LOGGER.debug("AppSync API Key (Loaded): {}", appSyncApiKey.isEmpty() || appSyncApiKey.equals("da2-mtgw772j5jbclj5kdwxrhx46ay") ? "Not Set or Placeholder" : "****" + appSyncApiKey.substring(Math.max(0, appSyncApiKey.length() - 4)));
         }
     }
 }
