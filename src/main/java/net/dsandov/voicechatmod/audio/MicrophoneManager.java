@@ -1,8 +1,11 @@
 package net.dsandov.voicechatmod.audio;
 
 import net.dsandov.voicechatmod.VoiceChatMod; // For logging
+import net.minecraft.client.Minecraft;
 
 import javax.sound.sampled.*;
+import java.time.Instant;
+import java.util.Base64;
 
 public class MicrophoneManager {
 
@@ -187,9 +190,8 @@ public class MicrophoneManager {
      */
     private void captureAudioDataLoop() {
         // Buffer to hold chunks of audio data read from the line.
-        // A common buffer size might be related to how often you want to send packets.
         // For 16kHz, 16-bit mono, 20ms of audio = 16000 * (16/8) * 0.020 = 640 bytes.
-        byte[] buffer = new byte[640]; // Example: 20ms of audio data at 16kHz, 16-bit mono
+        byte[] buffer = new byte[640]; // 20ms of audio data at 16kHz, 16-bit mono
         int bytesRead;
 
         VoiceChatMod.LOGGER.info("Audio capture loop started on thread: {}", Thread.currentThread().getName());
@@ -212,12 +214,47 @@ public class MicrophoneManager {
                 System.arraycopy(buffer, 0, rawPcmData, 0, bytesRead);
 
                 // Encode the raw PCM data
-                byte[] encodedData = this.audioEncoder.encode(rawPcmData); // Use the encoder
+                byte[] encodedData = this.audioEncoder.encode(rawPcmData);
 
                 if (encodedData != null && encodedData.length > 0) {
                     VoiceChatMod.LOGGER.debug("Encoded audio data: {} bytes.", encodedData.length);
-                    // Pass the encoded data to the loopback buffer (or network layer later)
+                    
+                    // Send to both loopback buffer and AppSync
                     VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(encodedData, encodedData.length);
+                    
+                    // Send to AppSync if initialized
+                    if (VoiceChatMod.ClientModEvents.appSyncClientService != null && 
+                        VoiceChatMod.ClientModEvents.appSyncClientService.isInitialized()) {
+                        
+                        try {
+                            // Convert binary data to Base64 string
+                            String base64Audio = Base64.getEncoder().encodeToString(encodedData);
+                            
+                            // Get the current player's name
+                            String playerName = VoiceChatMod.getCurrentPlayerName();
+                            
+                            VoiceChatMod.LOGGER.debug("Sending {} bytes of audio data to AppSync", encodedData.length);
+                            
+                            // Send audio data to AppSync
+                            boolean sent = VoiceChatMod.ClientModEvents.appSyncClientService.sendAudioMutation(
+                                "global", // For now using a global channel
+                                "pcm",    // Audio format (using PCM since we're using PassthroughEncoder)
+                                "base64", // Encoding format
+                                base64Audio, // Base64 encoded audio data
+                                playerName
+                            );
+
+                            if (sent) {
+                                VoiceChatMod.LOGGER.debug("Successfully sent audio data to AppSync");
+                            } else {
+                                VoiceChatMod.LOGGER.warn("Failed to send audio data to AppSync");
+                            }
+                        } catch (Exception e) {
+                            VoiceChatMod.LOGGER.error("Error sending audio data to AppSync", e);
+                        }
+                    } else {
+                        VoiceChatMod.LOGGER.debug("AppSync service not initialized, skipping audio transmission");
+                    }
                 } else {
                     VoiceChatMod.LOGGER.warn("Encoding produced null or empty data.");
                 }

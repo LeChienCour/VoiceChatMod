@@ -15,10 +15,11 @@ group = mod_group_id
 // Repositories where Gradle looks for dependencies.
 // We need Maven Central for the AWS SDK.
 repositories {
-    mavenLocal()
-    // Add Maven Central repository for AWS SDK and other common libraries
-    // Maven Central is a primary repository for Java libraries.
     mavenCentral()
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/'
+    }
 }
 
 base {
@@ -59,21 +60,10 @@ configurations {
 }
 
 dependencies {
-    implementation "net.neoforged:neoforge:${neo_version}" // NeoForge
-
-    // AWS SDK for Java v2 dependencies
-    implementation platform('software.amazon.awssdk:bom:2.25.48')
-
-    // Solo el núcleo del SDK.
+    implementation "net.neoforged:neoforge:${neo_version}"
+    annotationProcessor "net.neoforged:neoforge:${neo_version}"
+    implementation(platform("software.amazon.awssdk:bom:2.27.21"))
     implementation 'software.amazon.awssdk:sdk-core'
-
-    // Comentamos TODAS las demás dependencias específicas de AWS por ahora:
-    // implementation 'software.amazon.awssdk:regions'
-    // implementation 'software.amazon.awssdk:auth'
-    // implementation 'software.amazon.awssdk:url-connection-client'
-    // implementation 'software.amazon.awssdk:apache-client'
-    // implementation 'software.amazon.awssdk:appsync' // etc.
-
     implementation 'com.google.code.gson:gson:2.10.1'
 }
 

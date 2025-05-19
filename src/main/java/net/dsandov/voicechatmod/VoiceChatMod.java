@@ -29,6 +29,7 @@ import java.io.ByteArrayOutputStream;
 import net.dsandov.voicechatmod.Keybinds;
 import net.dsandov.voicechatmod.audio.AudioManager;
 import net.dsandov.voicechatmod.audio.MicrophoneManager;
+import java.util.Base64;
 
 @Mod(VoiceChatMod.MOD_ID)
 public class VoiceChatMod {
@@ -103,7 +104,7 @@ public class VoiceChatMod {
                                     context.getSource().sendFailure(Component.literal("MicrophoneManager not initialized on client."));
                                 }
                             });
-                            return 1; // Return 1 for success
+                            return 1;
                         })
                 )
                 .then(Commands.literal("playloopback")
@@ -111,17 +112,71 @@ public class VoiceChatMod {
                             ClientModEvents.executeClientSideTask(() -> {
                                 if (ClientModEvents.audioManager != null && ClientModEvents.audioManager.isInitialized()) {
                                     ClientModEvents.playLoopbackAudio();
-                                    // Feedback can be part of playLoopbackAudio or here
                                     context.getSource().sendSuccess(() -> Component.literal("Attempting to play accumulated loopback audio."), false);
                                 } else {
                                     context.getSource().sendFailure(Component.literal("Audio Manager not ready for loopback playback."));
                                 }
                             });
-                            return 1; // Return 1 for success
+                            return 1;
                         })
+                )
+                .then(Commands.literal("echo")
+                        .then(Commands.literal("on")
+                            .executes(context -> {
+                                ClientModEvents.executeClientSideTask(() -> {
+                                    ClientModEvents.setEchoEnabled(true);
+                                    context.getSource().sendSuccess(() -> Component.literal("Voice chat echo mode ENABLED - You will hear your own voice."), false);
+                                });
+                                return 1;
+                            })
+                        )
+                        .then(Commands.literal("off")
+                            .executes(context -> {
+                                ClientModEvents.executeClientSideTask(() -> {
+                                    ClientModEvents.setEchoEnabled(false);
+                                    context.getSource().sendSuccess(() -> Component.literal("Voice chat echo mode DISABLED - You will not hear your own voice."), false);
+                                });
+                                return 1;
+                            })
+                        )
+                        .then(Commands.literal("status")
+                            .executes(context -> {
+                                ClientModEvents.executeClientSideTask(() -> {
+                                    boolean status = ClientModEvents.isEchoEnabled();
+                                    context.getSource().sendSuccess(() -> 
+                                        Component.literal("Voice chat echo mode is currently: " + 
+                                            (status ? "ENABLED (hearing own voice)" : "DISABLED (not hearing own voice)")), false);
+                                });
+                                return 1;
+                            })
+                        )
+                )
+                .then(Commands.literal("voicechat")
+                    .then(Commands.literal("test")
+                        .executes(context -> {
+                            if (ClientModEvents.appSyncClientService != null && ClientModEvents.appSyncClientService.isInitialized()) {
+                                context.getSource().sendSuccess(() -> Component.literal("Running AppSync connection test..."), false);
+                                boolean sent = ClientModEvents.appSyncClientService.sendTestMessage("test");
+                                if (sent) {
+                                    context.getSource().sendSuccess(() -> Component.literal("✓ AppSync test completed successfully. Check logs for details."), false);
+                                } else {
+                                    context.getSource().sendFailure(Component.literal("✗ AppSync test failed. Check logs for details."));
+                                }
+                            } else {
+                                context.getSource().sendFailure(Component.literal("✗ AppSync service not initialized"));
+                            }
+                            return 1;
+                        }))
                 )
         );
         LOGGER.info("Registered /vc commands for VoiceChatMod.");
+    }
+
+    public static String getCurrentPlayerName() {
+        if (net.minecraft.client.Minecraft.getInstance().player != null) {
+            return net.minecraft.client.Minecraft.getInstance().player.getName().getString();
+        }
+        return "";
     }
 
     /**
@@ -136,11 +191,33 @@ public class VoiceChatMod {
         private static ByteArrayOutputStream loopbackAudioBuffer = new ByteArrayOutputStream();
         private static final int MAX_LOOPBACK_BUFFER_SIZE_SECONDS = 5;
         private static final int BYTES_PER_SECOND = 16000 * 2; // Assuming 16kHz, 16-bit mono
+        private static boolean echoEnabled = false; // New flag for echo mode
+        private static boolean isAppSyncInitializing = false;
+        private static int appSyncInitRetries = 0;
+        private static final int MAX_INIT_RETRIES = 3;
 
         @SubscribeEvent
         public static void onClientSetup(FMLClientSetupEvent event) {
             LOGGER.info("Executing clientSetup for {}.", MOD_ID);
 
+            // Initialize audio components first
+            initializeAudioComponents();
+
+            // Delay AppSync initialization until the game is fully loaded
+            event.enqueueWork(() -> {
+                net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                    // Wait a bit longer for configs to be fully loaded
+                    try {
+                        Thread.sleep(5000);
+                        initializeAppSyncIfNeeded();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            });
+        }
+
+        private static void initializeAudioComponents() {
             MicrophoneManager.listAvailableMicrophones(); // For debugging
             microphoneManager = new MicrophoneManager();
             if (microphoneManager.initialize()) {
@@ -155,34 +232,94 @@ public class VoiceChatMod {
             } else {
                 LOGGER.error("AudioManager failed to initialize.");
             }
-            VoiceChatMod.LOGGER.info("Attempting to initialize AppSyncClientService...");
+        }
+
+        private static void initializeAppSyncIfNeeded() {
+            // Check if initialization is already in progress
+            if (isAppSyncInitializing) {
+                LOGGER.debug("AppSync initialization already in progress, skipping...");
+                return;
+            }
+
+            // Check if already initialized successfully
+            if (appSyncClientService != null && appSyncClientService.isInitialized()) {
+                LOGGER.debug("AppSync already initialized successfully, skipping...");
+                return;
+            }
+
+            // Check if we've exceeded retry attempts
+            if (appSyncInitRetries >= MAX_INIT_RETRIES) {
+                LOGGER.warn("Maximum AppSync initialization retries reached ({}). Will not attempt further retries.", MAX_INIT_RETRIES);
+                return;
+            }
+
+            // Validate configuration
+            if (!isAppSyncConfigValid()) {
+                LOGGER.warn("AppSync configuration is not valid, skipping initialization.");
+                return;
+            }
+
+            // Set initialization flag
+            isAppSyncInitializing = true;
+
             try {
+                LOGGER.info("Initializing AppSync service (attempt {}/{})...", appSyncInitRetries + 1, MAX_INIT_RETRIES);
                 appSyncClientService = new AppSyncClientService();
-                VoiceChatMod.LOGGER.info("AppSyncClientService instance after new: " + (appSyncClientService == null ? "IS NULL" : "IS NOT NULL")); // NUEVO LOG DE DIAGNÓSTICO
-                if (appSyncClientService == null) {
-                    VoiceChatMod.LOGGER.error("<<<<< AppSyncClientService IS NULL immediately after instantiation! This should not happen. >>>>>");
-                    return;
-                }
-                VoiceChatMod.LOGGER.info("AppSyncClientService instance CREATED and NOT NULL. Queueing connect task...");
-                final AppSyncClientService serviceToUseInLambda = appSyncClientService; // Capturar la referencia localmente
-                executeClientSideTask(() -> {
-                    VoiceChatMod.LOGGER.info(">>> executeClientSideTask for AppSync: Task IS RUNNING!");
-                    if (serviceToUseInLambda != null) {
-                        serviceToUseInLambda.initializeAndConnect().thenAcceptAsync(success -> {
-                        }, net.minecraft.client.Minecraft.getInstance()::execute);
-                    } else {
-                        VoiceChatMod.LOGGER.error(">>> executeClientSideTask for AppSync: serviceToUseInLambda was NULL!");
+                
+                appSyncClientService.initializeAndConnect()
+                    .thenAcceptAsync(success -> {
+                        isAppSyncInitializing = false;
+                        if (success) {
+                            LOGGER.info("AppSync service initialized and connected successfully!");
+                            appSyncInitRetries = 0; // Reset retry counter on success
+                        } else {
+                            LOGGER.error("Failed to initialize AppSync service.");
+                            handleInitializationFailure();
+                        }
+                    }, net.minecraft.client.Minecraft.getInstance()::execute)
+                    .exceptionally(throwable -> {
+                        isAppSyncInitializing = false;
+                        LOGGER.error("Critical error during AppSync service initialization!", throwable);
+                        handleInitializationFailure();
+                        return null;
+                    });
+            } catch (Throwable t) {
+                isAppSyncInitializing = false;
+                LOGGER.error("Critical error during AppSync service initialization!", t);
+                handleInitializationFailure();
+            }
+        }
+
+        private static boolean isAppSyncConfigValid() {
+            return Config.appSyncApiKey != null 
+                && !Config.appSyncApiKey.equals("YOUR_APPSYNC_API_KEY_HERE")
+                && Config.voiceServerUrl != null 
+                && !Config.voiceServerUrl.equals("YOUR_APPSYNC_GRAPHQL_API_URL_HERE");
+        }
+
+        private static void handleInitializationFailure() {
+            appSyncInitRetries++;
+            if (appSyncInitRetries < MAX_INIT_RETRIES) {
+                // Schedule next retry with exponential backoff
+                long delayMs = Math.min(1000 * (long)Math.pow(2, appSyncInitRetries), 30000); // Max 30 seconds
+                LOGGER.info("Scheduling AppSync initialization retry in {} ms...", delayMs);
+                net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                    try {
+                        Thread.sleep(delayMs);
+                        initializeAppSyncIfNeeded();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
                 });
-            } catch (Throwable t) {
-                VoiceChatMod.LOGGER.error(">>> CRITICAL ERROR during AppSyncClientService instantiation or task queuing in onClientSetup!", t);
+            } else {
+                LOGGER.error("AppSync initialization failed after {} attempts. Manual intervention may be required.", MAX_INIT_RETRIES);
             }
         }
 
         @SubscribeEvent
         public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-            Keybinds.initializeKeybindings(); // Initialize our KeyMapping objects
-            event.register(Keybinds.PUSH_TO_TALK_KEY); // Register the PTT key
+            Keybinds.initializeKeybindings();
+            event.register(Keybinds.PUSH_TO_TALK_KEY);
             VoiceChatMod.LOGGER.info("Registered keybindings for {}.", MOD_ID);
         }
 
@@ -204,11 +341,12 @@ public class VoiceChatMod {
 
         public static void appendToLoopbackBuffer(byte[] audioData, int length) {
             if (audioData != null && length > 0) {
+                VoiceChatMod.LOGGER.debug("Adding {} bytes to LOCAL loopback buffer", length);
                 if (loopbackAudioBuffer.size() < MAX_LOOPBACK_BUFFER_SIZE_SECONDS * BYTES_PER_SECOND) {
                     loopbackAudioBuffer.write(audioData, 0, length);
                 } else if (loopbackAudioBuffer.size() >= MAX_LOOPBACK_BUFFER_SIZE_SECONDS * BYTES_PER_SECOND &&
                         loopbackAudioBuffer.size() < MAX_LOOPBACK_BUFFER_SIZE_SECONDS * BYTES_PER_SECOND + length) {
-                    VoiceChatMod.LOGGER.warn("Loopback buffer limit reached ({} seconds). Further audio for this loopback recording will be ignored.", MAX_LOOPBACK_BUFFER_SIZE_SECONDS);
+                    VoiceChatMod.LOGGER.warn("LOCAL loopback buffer limit reached ({} seconds). Further audio for this loopback recording will be ignored.", MAX_LOOPBACK_BUFFER_SIZE_SECONDS);
                     loopbackAudioBuffer.write(audioData, 0, length); // Write the last bit to fill
                 }
                 // If buffer is full, new data is ignored silently after the warning.
@@ -219,14 +357,47 @@ public class VoiceChatMod {
             if (audioManager != null && audioManager.isInitialized()) {
                 byte[] audioToPlay = loopbackAudioBuffer.toByteArray();
                 if (audioToPlay.length > 0) {
-                    VoiceChatMod.LOGGER.info("Attempting to play {} bytes of accumulated loopback audio.", audioToPlay.length);
+                    VoiceChatMod.LOGGER.info("Playing {} bytes from LOCAL loopback buffer", audioToPlay.length);
                     audioManager.playAudio(audioToPlay, 0, audioToPlay.length);
                 } else {
-                    VoiceChatMod.LOGGER.warn("Loopback audio buffer is empty. Nothing to play.");
+                    VoiceChatMod.LOGGER.warn("LOCAL loopback buffer is empty. Nothing to play.");
                 }
             } else {
                 VoiceChatMod.LOGGER.warn("AudioManager not ready for loopback playback.");
             }
+        }
+        public static void processReceivedAudio(String encodedAudioData, String author) {
+            if (audioManager != null && audioManager.isInitialized()) {
+                try {
+                    // Only process if it's from another player OR if echo is enabled
+                    if (!author.equals(getCurrentPlayerName()) || echoEnabled) {
+                        // Decode the Base64 audio data
+                        byte[] audioData = Base64.getDecoder().decode(encodedAudioData);
+                        
+                        VoiceChatMod.LOGGER.debug("Processing {} bytes of audio data from {}{}", 
+                            audioData.length, author, 
+                            author.equals(getCurrentPlayerName()) ? " (ECHO)" : "");
+                        
+                        // Play the audio through the AudioManager
+                        audioManager.playAudio(audioData, 0, audioData.length);
+                    }
+                } catch (IllegalArgumentException e) {
+                    VoiceChatMod.LOGGER.error("Error decoding audio data from {}: {}", author, e.getMessage());
+                } catch (Exception e) {
+                    VoiceChatMod.LOGGER.error("Error processing audio from {}", author, e);
+                }
+            } else {
+                VoiceChatMod.LOGGER.warn("Cannot process received audio - AudioManager not initialized");
+            }
+        }
+
+        public static boolean isEchoEnabled() {
+            return echoEnabled;
+        }
+
+        public static void setEchoEnabled(boolean enabled) {
+            echoEnabled = enabled;
+            VoiceChatMod.LOGGER.info("Voice chat echo mode: {}", enabled ? "ENABLED" : "DISABLED");
         }
     }
 
