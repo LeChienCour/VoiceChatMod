@@ -1,6 +1,6 @@
-# VoiceChatMod - Minecraft Voice Chat with AWS AppSync
+# VoiceChatMod - Minecraft Voice Chat with AWS API Gateway WebSocket
 
-A Minecraft mod that enables real-time voice chat using AWS AppSync for communication.
+A Minecraft mod that enables real-time voice chat using AWS API Gateway WebSocket for communication.
 
 ## Current Status
 
@@ -8,9 +8,9 @@ The mod is in development with the following features implemented:
 
 - ✅ Microphone input capture and management
 - ✅ Audio playback system
-- ✅ Basic WebSocket connection to AWS AppSync
+- ✅ WebSocket connection to AWS API Gateway
 - ✅ Configuration system
-- ❌ Working AppSync mutations/subscriptions (In Progress)
+- ✅ Basic audio transmission and reception
 
 ## Setup
 
@@ -18,7 +18,7 @@ The mod is in development with the following features implemented:
 
 - Minecraft 1.21.4
 - NeoForge
-- AWS Account with AppSync API configured
+- AWS Account with API Gateway WebSocket API configured
 - Java Development Kit (JDK) 17 or higher
 
 ### Configuration
@@ -33,40 +33,43 @@ default_volume = 0.7
 # Maximum distance for voice transmission (in blocks)
 max_voice_distance = 64
 
-[aws_appsync]
-# Your AppSync API URL
-voice_server_url = "https://your-appsync-endpoint.appsync-api.region.amazonaws.com/graphql"
-# Your AppSync API Key
+[aws_gateway]
+# Your API Gateway WebSocket URL
+voice_gateway_url = "wss://your-api-id.execute-api.region.amazonaws.com/stage"
+# Optional API key for authentication
 api_key = "your-api-key-here"
-# AWS Region (e.g., us-east-1)
-api_region = "your-region"
+# Number of reconnection attempts
+reconnection_attempts = 3
+# Delay between reconnection attempts (in seconds)
+reconnection_delay = 5
 ```
 
-### AWS AppSync Schema Requirements
+### AWS API Gateway WebSocket Requirements
 
-The mod expects the following GraphQL schema:
+The mod expects the following WebSocket message structure:
 
-```graphql
-type Audio {
-  format: String!
-  encoding: String!
-  data: String!
-  author: String!
+```json
+// Outgoing message (client to server)
+{
+  "action": "sendaudio",
+  "channel": "string",
+  "format": "string",
+  "encoding": "string",
+  "data": "string", // Base64 encoded audio data
+  "author": "string",
+  "timestamp": "string",
+  "context": "string"
 }
 
-type Mutation {
-  sendAudio(
-    channel: String!
-    format: String!
-    encoding: String!
-    data: String!
-    author: String!
-  ): Audio
-}
-
-type Subscription {
-  onReceiveAudio(channel: String!): Audio
-    @aws_subscribe(mutations: ["sendAudio"])
+// Incoming message (server to client)
+{
+  "action": "audio",
+  "data": "string", // Base64 encoded audio data
+  "format": "string",
+  "encoding": "string",
+  "author": "string",
+  "timestamp": "string",
+  "context": "string"
 }
 ```
 
@@ -75,84 +78,21 @@ type Subscription {
 ### Working Features
 - Microphone detection and initialization
 - Audio capture in PCM format (16kHz, 16-bit mono)
-- Basic WebSocket connection to AppSync
+- WebSocket connection to API Gateway
 - Configuration management
 - In-game commands (/vc test, /vc toggle)
 
 ### Current Issues
-1. AppSync GraphQL Schema Mismatch:
-   - The current mutation format doesn't match the server schema
-   - Receiving "Unknown field argument method" error
-   - Subscription errors with "unknown not supported through the realtime channel"
+- None reported
 
-2. WebSocket Connection:
-   - Connection establishes but encounters protocol errors
-   - Need to verify subscription format
+## Contributing
 
-### Next Steps
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-1. **AppSync Schema Updates**:
-   - Remove the `method` field from mutations
-   - Verify subscription protocol compatibility
-   - Update mutation format to match server expectations
+## License
 
-2. **Error Handling**:
-   - Implement better recovery for WebSocket disconnections
-   - Add user feedback for connection issues
-   - Improve error logging and diagnostics
-
-3. **Audio Processing**:
-   - Implement audio compression (currently using PassthroughEncoder)
-   - Add voice activity detection
-   - Implement spatial audio based on player positions
-
-4. **Testing**:
-   - Create comprehensive test suite
-   - Add integration tests for AppSync communication
-   - Test with multiple players
-
-## Debugging
-
-### Common Issues
-
-1. **Configuration Issues**:
-   ```log
-   [ERROR] Invalid region extracted from URL: amazonaws
-   ```
-   Solution: Ensure `api_region` in config matches the region in your AppSync URL
-
-2. **AppSync Connection**:
-   ```log
-   [ERROR] Unknown field argument method @ 'sendAudio'
-   ```
-   Solution: Update mutation format to match server schema
-
-### Debug Commands
-
-- `/vc test` - Test AppSync connectivity
-- `/vc toggle` - Toggle voice chat on/off
-- `/vc debug` - Show debug information
-
-## For AI Assistants
-
-When working on this project, focus on:
-
-1. GraphQL Schema Alignment:
-   - Current schema mismatch in mutations and subscriptions
-   - Need to remove `method` field and verify field arguments
-
-2. WebSocket Protocol:
-   - Check subscription message format
-   - Verify real-time channel support
-
-3. Audio Processing:
-   - Currently using uncompressed PCM
-   - Need to implement proper codec
-
-Key files:
-- `AppSyncClientService.java`: WebSocket and GraphQL handling
-- `MicrophoneManager.java`: Audio capture
-- `AudioManager.java`: Audio playback
-- `Config.java`: Configuration management
-
-Current Priority: Fix AppSync schema mismatch and subscription issues.
+This project is licensed under the MIT License - see the LICENSE file for details.

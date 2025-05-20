@@ -32,21 +32,25 @@ public class Config
             .comment("Default voice chat volume (0.0 to 1.0). This might be overridden by client-side settings later.")
             .defineInRange("defaultVolume", 0.7, 0.0, 1.0);
 
-    private static final ModConfigSpec.ConfigValue<String> VOICE_SERVER_URL_SPEC = BUILDER
-            .comment("The GraphQL API URL for the AWS AppSync voice server (e.g., https://<id>.appsync-api.<region>.amazonaws.com/graphql).")
-            .define("voiceServerUrl", "YOUR_APPSYNC_GRAPHQL_API_URL_HERE");
+    private static final ModConfigSpec.ConfigValue<String> VOICE_GATEWAY_URL_SPEC = BUILDER
+            .comment("The WebSocket URL for the Voice Gateway (AWS API Gateway). Example: wss://<api-id>.execute-api.<region>.amazonaws.com/<stage>")
+            .define("voiceGatewayUrl", "YOUR_WEBSOCKET_API_GATEWAY_URL_HERE");
 
-    private static final ModConfigSpec.ConfigValue<String> APPSYNC_API_KEY_SPEC = BUILDER
-            .comment("The API key for AWS AppSync authentication.")
-            .define("appSyncApiKey", "YOUR_APPSYNC_API_KEY_HERE");
+    private static final ModConfigSpec.ConfigValue<String> VOICE_GATEWAY_API_KEY_SPEC = BUILDER
+            .comment("Optional API key for AWS API Gateway authentication. Leave empty if not required.")
+            .define("voiceGatewayApiKey", "");
 
     private static final ModConfigSpec.IntValue MAX_VOICE_DISTANCE_SPEC = BUILDER
             .comment("Maximum distance (in blocks) at which players can hear each other. Set to 0 for global chat (if server supports).")
-            .defineInRange("maxVoiceDistance", 64, 0, 256); // Example range
+            .defineInRange("maxVoiceDistance", 64, 0, 256);
 
-    private static final ModConfigSpec.ConfigValue<String> APPSYNC_API_REGION_SPEC = BUILDER
-            .comment("The AWS region where your AppSync API is deployed.")
-            .define("appSyncApiRegion", "us-east-1");
+    private static final ModConfigSpec.IntValue RECONNECTION_ATTEMPTS_SPEC = BUILDER
+            .comment("Number of times to attempt reconnection to the voice gateway if connection is lost.")
+            .defineInRange("reconnectionAttempts", 3, 0, 10);
+
+    private static final ModConfigSpec.IntValue RECONNECTION_DELAY_SPEC = BUILDER
+            .comment("Delay in seconds between reconnection attempts.")
+            .defineInRange("reconnectionDelay", 5, 1, 30);
 
     // The actual config spec
     public static final ModConfigSpec SPEC = BUILDER.build();
@@ -55,9 +59,10 @@ public class Config
     public static boolean enableVoiceChat;
     public static double defaultVolume;
     public static int maxVoiceDistance;
-    public static String voiceServerUrl;
-    public static String appSyncApiKey;
-    public static String appSyncApiRegion;
+    public static String voiceGatewayUrl;
+    public static String voiceGatewayApiKey;
+    public static int reconnectionAttempts;
+    public static int reconnectionDelay;
 
     /**
      * This method is automatically called by NeoForge when a mod config file for this mod is loaded or reloaded.
@@ -78,68 +83,22 @@ public class Config
             enableVoiceChat = ENABLE_VOICE_CHAT_SPEC.get();
             defaultVolume = DEFAULT_VOLUME_SPEC.get();
             maxVoiceDistance = MAX_VOICE_DISTANCE_SPEC.get();
-            voiceServerUrl = VOICE_SERVER_URL_SPEC.get();
-            appSyncApiKey = APPSYNC_API_KEY_SPEC.get();
-            appSyncApiRegion = APPSYNC_API_REGION_SPEC.get();
+            voiceGatewayUrl = VOICE_GATEWAY_URL_SPEC.get();
+            voiceGatewayApiKey = VOICE_GATEWAY_API_KEY_SPEC.get();
+            reconnectionAttempts = RECONNECTION_ATTEMPTS_SPEC.get();
+            reconnectionDelay = RECONNECTION_DELAY_SPEC.get();
 
-            // Log raw values for debugging
-            VoiceChatMod.LOGGER.debug("Raw configuration values:");
-            VoiceChatMod.LOGGER.debug("- AppSync URL: {}", voiceServerUrl);
-            VoiceChatMod.LOGGER.debug("- AppSync API Key: {}", appSyncApiKey != null ? appSyncApiKey.substring(0, 6) + "..." : "null");
-            VoiceChatMod.LOGGER.debug("- AppSync Region: {}", appSyncApiRegion);
-
-            // Validate AppSync configuration
+            // Validate WebSocket Gateway configuration
             boolean configValid = true;
-            if (voiceServerUrl == null || voiceServerUrl.equals("YOUR_APPSYNC_GRAPHQL_API_URL_HERE")) {
-                VoiceChatMod.LOGGER.error("AppSync GraphQL URL is not configured in voicechatmod-common.toml!");
+            if (voiceGatewayUrl == null || voiceGatewayUrl.equals("YOUR_WEBSOCKET_API_GATEWAY_URL_HERE")) {
+                VoiceChatMod.LOGGER.error("Voice Gateway WebSocket URL is not configured in voicechatmod-common.toml!");
                 configValid = false;
             }
-            if (appSyncApiKey == null || appSyncApiKey.equals("YOUR_APPSYNC_API_KEY_HERE")) {
-                VoiceChatMod.LOGGER.error("AppSync API Key is not configured in voicechatmod-common.toml!");
-                configValid = false;
-            }
-            if (appSyncApiRegion == null || appSyncApiRegion.trim().isEmpty()) {
-                VoiceChatMod.LOGGER.error("AppSync Region is not configured in voicechatmod-common.toml!");
-                configValid = false;
-            }
-
-            // Extract region from URL if not explicitly configured
-            if (configValid && voiceServerUrl != null) {
-                try {
-                    String[] urlParts = new java.net.URI(voiceServerUrl).getHost().split("\\.");
-                    if (urlParts.length >= 4) {
-                        String urlRegion = urlParts[3];
-                        if (!urlRegion.equals("amazonaws")) {
-                            if (!urlRegion.equals(appSyncApiRegion)) {
-                                VoiceChatMod.LOGGER.warn("AppSync Region in config ({}) doesn't match URL region ({}). Using URL region.", 
-                                    appSyncApiRegion, urlRegion);
-                                appSyncApiRegion = urlRegion;
-                            }
-                        } else {
-                            VoiceChatMod.LOGGER.error("Invalid region extracted from URL: {}", urlRegion);
-                            configValid = false;
-                        }
-                    }
-                } catch (Exception e) {
-                    VoiceChatMod.LOGGER.error("Failed to parse region from URL", e);
-                    configValid = false;
-                }
-            }
-
-            // Log configuration status
-            VoiceChatMod.LOGGER.info("Voice Chat Configuration Status:");
-            VoiceChatMod.LOGGER.info("- Voice Chat Enabled: {}", enableVoiceChat);
-            VoiceChatMod.LOGGER.info("- Default Volume: {}", defaultVolume);
-            VoiceChatMod.LOGGER.info("- Max Voice Distance: {}", maxVoiceDistance);
-            VoiceChatMod.LOGGER.info("- AppSync Region: {}", appSyncApiRegion);
-            VoiceChatMod.LOGGER.info("- AppSync URL configured: {}", voiceServerUrl != null && !voiceServerUrl.equals("YOUR_APPSYNC_GRAPHQL_API_URL_HERE"));
-            VoiceChatMod.LOGGER.info("- AppSync API Key configured: {}", appSyncApiKey != null && !appSyncApiKey.equals("YOUR_APPSYNC_API_KEY_HERE"));
-            VoiceChatMod.LOGGER.info("- Configuration valid: {}", configValid);
 
             if (!configValid) {
-                VoiceChatMod.LOGGER.error("Please configure the AppSync settings in config/voicechatmod-common.toml!");
+                VoiceChatMod.LOGGER.error("Please configure the Voice Gateway settings in config/voicechatmod-common.toml!");
             } else {
-                VoiceChatMod.LOGGER.info("AppSync configuration loaded and validated successfully.");
+                VoiceChatMod.LOGGER.info("Voice Gateway configuration loaded and validated successfully.");
             }
         } else {
             VoiceChatMod.LOGGER.debug("Ignoring config load event for non-matching spec: {}", event.getConfig().getFileName());
