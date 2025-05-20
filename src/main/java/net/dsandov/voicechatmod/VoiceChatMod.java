@@ -314,8 +314,8 @@ public class VoiceChatMod {
 
             try {
                 voiceGatewayClient = new VoiceGatewayClient(
-                    Config.voiceGatewayUrl,
-                    Config.voiceGatewayApiKey,
+                    Config.websocketStageUrl,
+                    Config.websocketApiKey,
                     Config.reconnectionAttempts,
                     Config.reconnectionDelay
                 );
@@ -425,41 +425,66 @@ public class VoiceChatMod {
      * to the NeoForge.EVENT_BUS in the main mod constructor (for client side only).
      * Its static methods annotated with @SubscribeEvent will be picked up.
      */
-    // NO @EventBusSubscriber annotation here
     public static class ClientForgeEvents {
-        // State variable to track if PTT key was pressed in the previous tick
         private static boolean isPTTKeyPressed = false;
+        private static boolean isCapturing = false;
 
         @SubscribeEvent
         public static void onClientTick(ClientTickEvent.Pre event) {
-            // Ensure microphoneManager is initialized (it's in ClientModEvents)
-            // and we are in a playable state (e.g., player exists, not in a menu where PTT might be irrelevant)
-            if (ClientModEvents.microphoneManager == null || net.minecraft.client.Minecraft.getInstance().player == null || net.minecraft.client.Minecraft.getInstance().screen != null) {
-                // If PTT was active but we are no longer in a state to use it (e.g., opened a menu, left world)
-                // ensure microphone is stopped.
-                if (isPTTKeyPressed && ClientModEvents.microphoneManager != null && ClientModEvents.microphoneManager.isCapturing()) {
-                    ClientModEvents.microphoneManager.stopCapture();
-                    isPTTKeyPressed = false; // Reset PTT state
-                    VoiceChatMod.LOGGER.debug("PTT key was active, but context changed (e.g., menu open/not in world), stopping capture.");
-                }
+            handlePushToTalk();
+        }
+
+        private static void handlePushToTalk() {
+            // Check if we're in a valid state to handle PTT
+            if (!isValidGameState()) {
+                stopCaptureIfNeeded();
                 return;
             }
 
-            // Check if the PTT key is currently being pressed down
             boolean pttCurrentlyPressed = Keybinds.PUSH_TO_TALK_KEY.isDown();
 
+            // Handle PTT state changes
             if (pttCurrentlyPressed && !isPTTKeyPressed) {
-                // PTT key was just pressed
-                VoiceChatMod.LOGGER.debug("PTT key pressed - Starting microphone capture.");
-                // Access microphoneManager via ClientModEvents class name
-                ClientModEvents.microphoneManager.startCapture();
-                isPTTKeyPressed = true;
+                startCapture();
             } else if (!pttCurrentlyPressed && isPTTKeyPressed) {
-                // PTT key was just released
+                stopCapture();
+            }
+
+            isPTTKeyPressed = pttCurrentlyPressed;
+        }
+
+        private static boolean isValidGameState() {
+            net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
+            return ClientModEvents.microphoneManager != null 
+                && minecraft.player != null 
+                && minecraft.screen == null;
+        }
+
+        private static void stopCaptureIfNeeded() {
+            if (isPTTKeyPressed && isCapturing) {
+                stopCapture();
+                VoiceChatMod.LOGGER.debug("PTT key was active, but context changed (e.g., menu open/not in world), stopping capture.");
+            }
+        }
+
+        private static void startCapture() {
+            if (ClientModEvents.microphoneManager != null && !isCapturing) {
+                VoiceChatMod.LOGGER.debug("PTT key pressed - Starting microphone capture.");
+                ClientModEvents.microphoneManager.startCapture();
+                if (ClientModEvents.voiceGatewayClient != null) {
+                    ClientModEvents.microphoneManager.setAudioSender(ClientModEvents.voiceGatewayClient);
+                }
+                isCapturing = true;
+            }
+        }
+
+        private static void stopCapture() {
+            if (ClientModEvents.microphoneManager != null && isCapturing) {
                 VoiceChatMod.LOGGER.debug("PTT key released - Stopping microphone capture.");
                 ClientModEvents.microphoneManager.stopCapture();
-                isPTTKeyPressed = false;
+                isCapturing = false;
             }
+            isPTTKeyPressed = false;
         }
     }
 }

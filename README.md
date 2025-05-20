@@ -4,13 +4,87 @@ A Minecraft mod that enables real-time voice chat using AWS API Gateway WebSocke
 
 ## Current Status
 
-The mod is in development with the following features implemented:
+The mod is in development with the following features:
 
+### Working Features
 - ✅ Microphone input capture and management
 - ✅ Audio playback system
 - ✅ WebSocket connection to AWS API Gateway
-- ✅ Configuration system
-- ✅ Basic audio transmission and reception
+- ✅ Configuration system with AWS SSM Parameter Store integration
+- ✅ Basic audio transmission
+- ✅ Push-to-Talk functionality
+- ✅ AWS credentials validation
+
+### Known Issues
+- ❌ Echo mode (hearing own voice) not working despite being enabled
+- ❌ Audio reception from other players not implemented yet
+- ❌ Player name not being set correctly in audio transmission (shows as "Unknown")
+
+## Setup
+
+### Prerequisites
+
+- Minecraft 1.21.4
+- NeoForge
+- AWS Account with:
+  - API Gateway WebSocket API configured
+  - SSM Parameter Store parameters set up
+  - Valid AWS credentials in ~/.aws/credentials
+
+### Configuration
+
+The mod supports two ways of configuration:
+
+1. Manual configuration in `config/voicechatmod-common.toml` or `runs/client/config/voicechatmod-common.toml`:
+```toml
+# Enable/disable voice chat functionality
+enableVoiceChat = true
+# Default volume for voice chat (0.0 to 1.0)
+defaultVolume = 0.7
+# Maximum distance for voice transmission (in blocks)
+maxVoiceDistance = 64
+# Number of reconnection attempts
+reconnectionAttempts = 3
+# Delay between reconnection attempts (in seconds)
+reconnectionDelay = 5
+# WebSocket Gateway URL
+websocketStageUrl = "wss://your-api-id.execute-api.region.amazonaws.com/stage"
+# API key for authentication
+websocketApiKey = "your-api-key-here"
+# Cognito User Pool ID
+userPoolId = "your-user-pool-id"
+# Cognito User Pool Client ID
+userPoolClientId = "your-user-pool-client-id"
+```
+
+2. Automatic configuration using AWS SSM Parameter Store:
+   - Use the `/vc updateconfig` command in-game to fetch parameters from SSM
+   - Required SSM parameters:
+     - `/game-server/test/websocket/stage-url`
+     - `/game-server/test/websocket/api-key`
+     - `/game-server/test/cognito/user-pool-id`
+     - `/game-server/test/cognito/user-pool-client-id`
+
+### Commands
+
+- `/vc micstart` - Start microphone capture
+- `/vc micstop` - Stop microphone capture
+- `/vc playloopback` - Play back captured audio
+- `/vc echo on/off/status` - Control/check echo mode
+- `/vc updateconfig` - Update configuration from SSM
+
+### Controls
+
+- Push-to-Talk: Default key 'V' (configurable in game settings)
+
+## Development Status
+
+The mod is currently in active development. Next steps:
+1. Fix echo mode functionality
+2. Implement proper audio reception from other players
+3. Fix player name transmission
+4. Add distance-based audio attenuation
+5. Implement proper error handling for WebSocket disconnections
 
 ## Setup
 

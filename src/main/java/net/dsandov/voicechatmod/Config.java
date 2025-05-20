@@ -65,8 +65,8 @@ public class Config
     public static boolean enableVoiceChat;
     public static double defaultVolume;
     public static int maxVoiceDistance;
-    public static String voiceGatewayUrl;
-    public static String voiceGatewayApiKey;
+    public static String websocketStageUrl;
+    public static String websocketApiKey;
     public static int reconnectionAttempts;
     public static int reconnectionDelay;
     public static String userPoolId;
@@ -110,27 +110,17 @@ public class Config
         reconnectionDelay = RECONNECTION_DELAY_SPEC.get();
 
         // Load AWS configuration from TOML
-        voiceGatewayUrl = WEBSOCKET_STAGE_URL_SPEC.get();
-        voiceGatewayApiKey = WEBSOCKET_API_KEY_SPEC.get();
+        websocketStageUrl = WEBSOCKET_STAGE_URL_SPEC.get();
+        websocketApiKey = WEBSOCKET_API_KEY_SPEC.get();
         userPoolId = USER_POOL_ID_SPEC.get();
         userPoolClientId = USER_POOL_CLIENT_ID_SPEC.get();
 
-        // Log current configuration state
-        logConfigurationState();
-    }
-
-    private static void logConfigurationState() {
-        VoiceChatMod.LOGGER.info("Current configuration state:");
-        VoiceChatMod.LOGGER.info("  Voice Chat Enabled: {}", enableVoiceChat);
-        VoiceChatMod.LOGGER.info("  Default Volume: {}", defaultVolume);
-        VoiceChatMod.LOGGER.info("  Max Voice Distance: {}", maxVoiceDistance);
-        VoiceChatMod.LOGGER.info("  Reconnection Attempts: {}", reconnectionAttempts);
-        VoiceChatMod.LOGGER.info("  Reconnection Delay: {}", reconnectionDelay);
-        VoiceChatMod.LOGGER.info("AWS Configuration:");
-        VoiceChatMod.LOGGER.info("  WebSocket URL configured: {}", !voiceGatewayUrl.isEmpty());
-        VoiceChatMod.LOGGER.info("  API Key configured: {}", !voiceGatewayApiKey.isEmpty());
-        VoiceChatMod.LOGGER.info("  User Pool ID configured: {}", !userPoolId.isEmpty());
-        VoiceChatMod.LOGGER.info("  User Pool Client ID configured: {}", !userPoolClientId.isEmpty());
+        // Log configuration state
+        VoiceChatMod.LOGGER.info("Voice Gateway Configuration:");
+        VoiceChatMod.LOGGER.info("  WebSocket URL: {}", websocketStageUrl.isEmpty() ? "Not configured" : "Configured");
+        VoiceChatMod.LOGGER.info("  API Key: {}", websocketApiKey.isEmpty() ? "Not configured" : "Configured");
+        VoiceChatMod.LOGGER.info("  Max Reconnect Attempts: {}", reconnectionAttempts);
+        VoiceChatMod.LOGGER.info("  Reconnect Delay: {} seconds", reconnectionDelay);
     }
 
     /**
@@ -139,12 +129,12 @@ public class Config
     private static void validateAWSConfig() {
         boolean configValid = true;
         
-        if (voiceGatewayUrl.isEmpty()) {
+        if (websocketStageUrl.isEmpty()) {
             VoiceChatMod.LOGGER.warn("WebSocket URL not configured!");
             configValid = false;
         }
         
-        if (voiceGatewayApiKey.isEmpty()) {
+        if (websocketApiKey.isEmpty()) {
             VoiceChatMod.LOGGER.warn("API Key not configured!");
             configValid = false;
         }
@@ -189,8 +179,8 @@ public class Config
         USER_POOL_CLIENT_ID_SPEC.set(clientId);
 
         // Update the static fields
-        voiceGatewayUrl = websocketUrl;
-        voiceGatewayApiKey = apiKey;
+        websocketStageUrl = websocketUrl;
+        websocketApiKey = apiKey;
         userPoolId = poolId;
         userPoolClientId = clientId;
 

@@ -25,10 +25,10 @@ public class ConfigUpdater {
             .build();
 
     private static final String[] SSM_PARAMETERS = {
-        "/game-server/websocket/stage-url",
-        "/game-server/websocket/api-key",
-        "/game-server/cognito/user-pool-id",
-        "/game-server/cognito/user-pool-client-id"
+        "/game-server/test/websocket/stage-url",
+        "/game-server/test/websocket/api-key",
+        "/game-server/test/cognito/user-pool-id",
+        "/game-server/test/cognito/user-pool-client-id"
     };
 
     private static final String[] TOML_KEYS = {
