@@ -40,32 +40,56 @@ public class ConfigUpdater {
 
     public static void updateConfigFromSSM(String configPath) {
         try {
+            // Convert to Path object for proper path handling
+            Path configFilePath = Paths.get(configPath).toAbsolutePath().normalize();
+            VoiceChatMod.LOGGER.info("Attempting to update configuration at: {}", configFilePath);
+            
             // Read AWS credentials
+            VoiceChatMod.LOGGER.info("Reading AWS credentials from: {}", AWS_CREDENTIALS_PATH);
             String[] credentials = readAWSCredentials();
             if (credentials == null) {
                 VoiceChatMod.LOGGER.error("AWS credentials not found in {}", AWS_CREDENTIALS_PATH);
                 return;
             }
+            VoiceChatMod.LOGGER.info("AWS credentials loaded successfully");
             String accessKeyId = credentials[0];
             String secretKey = credentials[1];
 
             // Read current TOML content
             List<String> lines = new ArrayList<>();
-            if (Files.exists(Paths.get(configPath))) {
-                lines = Files.readAllLines(Paths.get(configPath));
+            if (Files.exists(configFilePath)) {
+                lines = Files.readAllLines(configFilePath);
+                VoiceChatMod.LOGGER.info("Reading configuration from: {}", configFilePath);
+            } else {
+                VoiceChatMod.LOGGER.error("Configuration file not found at: {}", configFilePath);
+                return;
             }
 
             // Get SSM parameters
+            VoiceChatMod.LOGGER.info("Starting SSM parameter retrieval...");
+            int updatedParams = 0;
             for (int i = 0; i < SSM_PARAMETERS.length; i++) {
+                VoiceChatMod.LOGGER.info("Fetching SSM parameter: {}", SSM_PARAMETERS[i]);
                 String paramValue = getSSMParameter(SSM_PARAMETERS[i], accessKeyId, secretKey);
                 if (paramValue != null) {
+                    VoiceChatMod.LOGGER.info("Successfully retrieved value for: {}", SSM_PARAMETERS[i]);
                     updateTomlValue(lines, TOML_KEYS[i], paramValue);
+                    updatedParams++;
+                } else {
+                    VoiceChatMod.LOGGER.warn("Failed to retrieve value for: {}", SSM_PARAMETERS[i]);
                 }
             }
 
             // Write updated content back to file
-            Files.write(Paths.get(configPath), lines);
-            VoiceChatMod.LOGGER.info("Configuration updated successfully from SSM parameters");
+            Files.write(configFilePath, lines);
+            VoiceChatMod.LOGGER.info("Configuration updated successfully. Updated {} out of {} parameters", 
+                updatedParams, SSM_PARAMETERS.length);
+
+            // Log the current state of AWS configuration (without revealing values)
+            logConfigurationState(lines);
+
+            // Reload configuration and initialize voice gateway
+            reloadConfigurationAndInitialize();
 
         } catch (Exception e) {
             VoiceChatMod.LOGGER.error("Failed to update configuration from SSM", e);
@@ -95,6 +119,7 @@ public class ConfigUpdater {
     private static String getSSMParameter(String parameterName, String accessKeyId, String secretKey) {
         try {
             String endpoint = String.format("https://ssm.%s.amazonaws.com/", AWS_REGION);
+            String host = String.format("ssm.%s.amazonaws.com", AWS_REGION);
             String amzTarget = "AmazonSSM.GetParameter";
             
             JsonObject requestBody = new JsonObject();
@@ -103,48 +128,59 @@ public class ConfigUpdater {
             
             String requestBodyStr = requestBody.toString();
             
-            // Get current timestamp
-            String amzDate = Instant.now().toString().substring(0, 16).replace("-", "").replace(":", "") + "Z";
+            // Get current timestamp in correct ISO-8601 basic format
+            Instant now = Instant.now();
+            String amzDate = String.format("%04d%02d%02dT%02d%02d%02dZ",
+                now.atZone(java.time.ZoneOffset.UTC).getYear(),
+                now.atZone(java.time.ZoneOffset.UTC).getMonthValue(),
+                now.atZone(java.time.ZoneOffset.UTC).getDayOfMonth(),
+                now.atZone(java.time.ZoneOffset.UTC).getHour(),
+                now.atZone(java.time.ZoneOffset.UTC).getMinute(),
+                now.atZone(java.time.ZoneOffset.UTC).getSecond());
             String dateStamp = amzDate.substring(0, 8);
-            
+
+            // Calculate request hash
+            String hashedPayload = bytesToHex(hmacSHA256(requestBodyStr, null));
+
             // Create canonical request
-            String canonicalHeaders = String.format(
-                "content-type:application/x-amz-json-1.1\n" +
-                "host:ssm.%s.amazonaws.com\n" +
-                "x-amz-date:%s\n" +
-                "x-amz-target:%s\n",
-                AWS_REGION, amzDate, amzTarget
+            String canonicalRequest = String.join("\n",
+                "POST",
+                "/",
+                "",
+                "content-type:application/x-amz-json-1.1",
+                "host:" + host,
+                "x-amz-date:" + amzDate,
+                "x-amz-target:" + amzTarget,
+                "",
+                "content-type;host;x-amz-date;x-amz-target",
+                hashedPayload
             );
-            String signedHeaders = "content-type;host;x-amz-date;x-amz-target";
-            
-            // Create signature
+
+            // Create string to sign
             String algorithm = "AWS4-HMAC-SHA256";
-            String credentialScope = String.format("%s/%s/%s/aws4_request", dateStamp, AWS_REGION, AWS_SERVICE);
-            
-            String stringToSign = String.format(
-                "%s\n%s\n%s\n%s",
-                algorithm,
-                amzDate,
-                credentialScope,
-                canonicalHeaders
-            );
-            
-            byte[] kSecret = ("AWS4" + secretKey).getBytes();
+            String credentialScope = dateStamp + "/" + AWS_REGION + "/" + AWS_SERVICE + "/aws4_request";
+            String stringToSign = algorithm + "\n" +
+                                amzDate + "\n" +
+                                credentialScope + "\n" +
+                                bytesToHex(hmacSHA256(canonicalRequest, null));
+
+            // Calculate signing key
+            byte[] kSecret = ("AWS4" + secretKey).getBytes("UTF-8");
             byte[] kDate = hmacSHA256(dateStamp, kSecret);
             byte[] kRegion = hmacSHA256(AWS_REGION, kDate);
             byte[] kService = hmacSHA256(AWS_SERVICE, kRegion);
             byte[] kSigning = hmacSHA256("aws4_request", kService);
-            byte[] signature = hmacSHA256(stringToSign, kSigning);
-            
-            String authorization = String.format(
-                "%s Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-                algorithm,
-                accessKeyId,
-                credentialScope,
-                signedHeaders,
-                bytesToHex(signature)
-            );
-            
+
+            // Calculate signature
+            String signature = bytesToHex(hmacSHA256(stringToSign, kSigning));
+
+            // Create authorization header
+            String authorization = algorithm + " " +
+                                 "Credential=" + accessKeyId + "/" + credentialScope + ", " +
+                                 "SignedHeaders=content-type;host;x-amz-date;x-amz-target, " +
+                                 "Signature=" + signature;
+
+            // Build and send request - Note: Host header is managed automatically by HttpClient
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(endpoint))
                 .header("Content-Type", "application/x-amz-json-1.1")
@@ -153,7 +189,7 @@ public class ConfigUpdater {
                 .header("Authorization", authorization)
                 .POST(HttpRequest.BodyPublishers.ofString(requestBodyStr))
                 .build();
-            
+
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             
             if (response.statusCode() == 200) {
@@ -202,6 +238,14 @@ public class ConfigUpdater {
     }
 
     private static byte[] hmacSHA256(String data, byte[] key) throws Exception {
+        if (data == null) return null;
+        
+        if (key == null) {
+            // If no key provided, just do a regular SHA256
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            return digest.digest(data.getBytes("UTF-8"));
+        }
+
         String algorithm = "HmacSHA256";
         Mac mac = Mac.getInstance(algorithm);
         mac.init(new SecretKeySpec(key, algorithm));
@@ -214,5 +258,66 @@ public class ConfigUpdater {
             result.append(String.format("%02x", b));
         }
         return result.toString();
+    }
+
+    private static void logConfigurationState(List<String> lines) {
+        VoiceChatMod.LOGGER.info("Current AWS Configuration State:");
+        for (String key : TOML_KEYS) {
+            boolean isConfigured = false;
+            for (String line : lines) {
+                if (line.trim().startsWith(key + " =")) {
+                    String value = line.substring(line.indexOf("=") + 1).trim();
+                    isConfigured = !value.equals("\"\"") && !value.equals("");
+                    VoiceChatMod.LOGGER.info("  {} is {}", key, isConfigured ? "configured" : "not configured");
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void reloadConfigurationAndInitialize() {
+        try {
+            // Force configuration reload
+            VoiceChatMod.LOGGER.info("Reloading configuration and initializing voice gateway...");
+            VoiceChatMod.getInstance().reloadConfig();
+            
+            // Initialize voice gateway with new configuration
+            VoiceChatMod.getInstance().initializeVoiceGateway();
+            
+            VoiceChatMod.LOGGER.info("Configuration reloaded and voice gateway initialized successfully");
+        } catch (Exception e) {
+            VoiceChatMod.LOGGER.error("Failed to reload configuration and initialize voice gateway", e);
+        }
+    }
+
+    /**
+     * Checks if AWS credentials are available and valid.
+     * @return true if credentials are found and valid, false otherwise
+     */
+    public static boolean checkAWSCredentials() {
+        try {
+            VoiceChatMod.LOGGER.info("Checking AWS credentials at: {}", AWS_CREDENTIALS_PATH);
+            String[] credentials = readAWSCredentials();
+            if (credentials == null) {
+                VoiceChatMod.LOGGER.warn("AWS credentials not found in {}", AWS_CREDENTIALS_PATH);
+                return false;
+            }
+            
+            String accessKeyId = credentials[0];
+            String secretKey = credentials[1];
+            
+            // Basic validation of credentials format
+            if (accessKeyId == null || accessKeyId.trim().isEmpty() || 
+                secretKey == null || secretKey.trim().isEmpty()) {
+                VoiceChatMod.LOGGER.warn("AWS credentials found but are invalid or empty");
+                return false;
+            }
+            
+            VoiceChatMod.LOGGER.info("AWS credentials validation successful");
+            return true;
+        } catch (Exception e) {
+            VoiceChatMod.LOGGER.error("Error checking AWS credentials", e);
+            return false;
+        }
     }
 } 

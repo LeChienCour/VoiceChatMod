@@ -83,42 +83,118 @@ public class Config
     }
 
     @SubscribeEvent
-    static void onLoad(final ModConfigEvent event) {
-        if (event.getConfig().getSpec() == Config.SPEC) {
-            VoiceChatMod.LOGGER.info("Loading VoiceChatMod configuration...");
-            
-            // Load basic configuration from TOML
-            enableVoiceChat = ENABLE_VOICE_CHAT_SPEC.get();
-            defaultVolume = DEFAULT_VOLUME_SPEC.get();
-            maxVoiceDistance = MAX_VOICE_DISTANCE_SPEC.get();
-            reconnectionAttempts = RECONNECTION_ATTEMPTS_SPEC.get();
-            reconnectionDelay = RECONNECTION_DELAY_SPEC.get();
+    public static void onLoad(final ModConfigEvent.Loading configEvent) {
+        VoiceChatMod.LOGGER.info("Loaded VoiceChatMod config file {}", configEvent.getConfig().getFileName());
+        loadConfigValues();
+    }
 
-            // Load AWS configuration from TOML
-            voiceGatewayUrl = WEBSOCKET_STAGE_URL_SPEC.get();
-            voiceGatewayApiKey = WEBSOCKET_API_KEY_SPEC.get();
-            userPoolId = USER_POOL_ID_SPEC.get();
-            userPoolClientId = USER_POOL_CLIENT_ID_SPEC.get();
+    @SubscribeEvent
+    public static void onFileChange(final ModConfigEvent.Reloading configEvent) {
+        VoiceChatMod.LOGGER.info("VoiceChatMod config just got changed on the file system!");
+        loadConfigValues();
+    }
 
-            // Validate configuration
-            boolean configValid = true;
-            if (voiceGatewayUrl.isEmpty()) {
-                VoiceChatMod.LOGGER.error("WebSocket URL not configured!");
-                configValid = false;
-            }
-            if (voiceGatewayApiKey.isEmpty()) {
-                VoiceChatMod.LOGGER.error("API Key not configured!");
-                configValid = false;
-            }
+    /**
+     * Public method to force configuration reload
+     */
+    public static void loadConfig() {
+        loadConfigValues();
+    }
 
-            if (!configValid) {
-                VoiceChatMod.LOGGER.error("Failed to load required configuration. Voice chat will be disabled.");
-                enableVoiceChat = false;
-            } else {
-                VoiceChatMod.LOGGER.info("Voice Gateway configuration loaded successfully.");
-            }
-        } else {
-            VoiceChatMod.LOGGER.debug("Ignoring config load event for non-matching spec: {}", event.getConfig().getFileName());
+    private static void loadConfigValues() {
+        // Load basic configuration from TOML
+        enableVoiceChat = ENABLE_VOICE_CHAT_SPEC.get();
+        defaultVolume = DEFAULT_VOLUME_SPEC.get();
+        maxVoiceDistance = MAX_VOICE_DISTANCE_SPEC.get();
+        reconnectionAttempts = RECONNECTION_ATTEMPTS_SPEC.get();
+        reconnectionDelay = RECONNECTION_DELAY_SPEC.get();
+
+        // Load AWS configuration from TOML
+        voiceGatewayUrl = WEBSOCKET_STAGE_URL_SPEC.get();
+        voiceGatewayApiKey = WEBSOCKET_API_KEY_SPEC.get();
+        userPoolId = USER_POOL_ID_SPEC.get();
+        userPoolClientId = USER_POOL_CLIENT_ID_SPEC.get();
+
+        // Log current configuration state
+        logConfigurationState();
+    }
+
+    private static void logConfigurationState() {
+        VoiceChatMod.LOGGER.info("Current configuration state:");
+        VoiceChatMod.LOGGER.info("  Voice Chat Enabled: {}", enableVoiceChat);
+        VoiceChatMod.LOGGER.info("  Default Volume: {}", defaultVolume);
+        VoiceChatMod.LOGGER.info("  Max Voice Distance: {}", maxVoiceDistance);
+        VoiceChatMod.LOGGER.info("  Reconnection Attempts: {}", reconnectionAttempts);
+        VoiceChatMod.LOGGER.info("  Reconnection Delay: {}", reconnectionDelay);
+        VoiceChatMod.LOGGER.info("AWS Configuration:");
+        VoiceChatMod.LOGGER.info("  WebSocket URL configured: {}", !voiceGatewayUrl.isEmpty());
+        VoiceChatMod.LOGGER.info("  API Key configured: {}", !voiceGatewayApiKey.isEmpty());
+        VoiceChatMod.LOGGER.info("  User Pool ID configured: {}", !userPoolId.isEmpty());
+        VoiceChatMod.LOGGER.info("  User Pool Client ID configured: {}", !userPoolClientId.isEmpty());
+    }
+
+    /**
+     * Validates the AWS configuration and logs appropriate messages
+     */
+    private static void validateAWSConfig() {
+        boolean configValid = true;
+        
+        if (voiceGatewayUrl.isEmpty()) {
+            VoiceChatMod.LOGGER.warn("WebSocket URL not configured!");
+            configValid = false;
         }
+        
+        if (voiceGatewayApiKey.isEmpty()) {
+            VoiceChatMod.LOGGER.warn("API Key not configured!");
+            configValid = false;
+        }
+        
+        if (userPoolId.isEmpty()) {
+            VoiceChatMod.LOGGER.warn("User Pool ID not configured!");
+            configValid = false;
+        }
+        
+        if (userPoolClientId.isEmpty()) {
+            VoiceChatMod.LOGGER.warn("User Pool Client ID not configured!");
+            configValid = false;
+        }
+
+        if (!configValid) {
+            VoiceChatMod.LOGGER.warn("Some AWS parameters are not configured. Voice chat features may be limited.");
+            enableVoiceChat = false;
+            ENABLE_VOICE_CHAT_SPEC.set(false);
+        } else {
+            VoiceChatMod.LOGGER.info("AWS configuration validated successfully.");
+            if (!enableVoiceChat) {
+                enableVoiceChat = true;
+                ENABLE_VOICE_CHAT_SPEC.set(true);
+            }
+        }
+    }
+
+    /**
+     * Updates AWS configuration values and saves them to the config file
+     * @param websocketUrl The WebSocket Gateway URL
+     * @param apiKey The API Gateway key
+     * @param poolId The Cognito User Pool ID
+     * @param clientId The Cognito User Pool Client ID
+     */
+    public static void updateAWSConfig(String websocketUrl, String apiKey, String poolId, String clientId) {
+        VoiceChatMod.LOGGER.info("Updating AWS configuration values...");
+        
+        // Update the spec values (this will trigger the save)
+        WEBSOCKET_STAGE_URL_SPEC.set(websocketUrl);
+        WEBSOCKET_API_KEY_SPEC.set(apiKey);
+        USER_POOL_ID_SPEC.set(poolId);
+        USER_POOL_CLIENT_ID_SPEC.set(clientId);
+
+        // Update the static fields
+        voiceGatewayUrl = websocketUrl;
+        voiceGatewayApiKey = apiKey;
+        userPoolId = poolId;
+        userPoolClientId = clientId;
+
+        // Validate the new configuration
+        validateAWSConfig();
     }
 }

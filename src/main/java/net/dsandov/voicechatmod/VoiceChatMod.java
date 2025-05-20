@@ -30,14 +30,21 @@ import net.dsandov.voicechatmod.audio.AudioManager;
 import net.dsandov.voicechatmod.audio.MicrophoneManager;
 import net.dsandov.voicechatmod.aws.VoiceGatewayClient;
 import java.util.Base64;
-import net.dsandov.voicechatmod.commands.UpdateConfigCommand;
+import net.dsandov.voicechatmod.util.ConfigUpdater;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 @Mod(VoiceChatMod.MOD_ID)
 public class VoiceChatMod {
     public static final String MOD_ID = "voicechatmod";
     public static final Logger LOGGER = LogUtils.getLogger();
+    
+    // Singleton instance
+    private static VoiceChatMod instance;
 
     public VoiceChatMod(IEventBus modEventBus, ModContainer modContainer) {
+        instance = this;
         LOGGER.info("{} constructor is loading...", MOD_ID);
 
         // Register FML lifecycle events to the MOD event bus
@@ -61,8 +68,42 @@ public class VoiceChatMod {
         LOGGER.info("{} has been initialized.", MOD_ID);
     }
 
+    // Singleton getter
+    public static VoiceChatMod getInstance() {
+        return instance;
+    }
+
+    // Method to reload configuration
+    public void reloadConfig() {
+        LOGGER.info("Forcing configuration reload...");
+        Config.loadConfig();
+        LOGGER.info("Configuration reloaded successfully");
+    }
+
+    // Method to initialize voice gateway
+    public void initializeVoiceGateway() {
+        LOGGER.info("Initializing voice gateway...");
+        ClientModEvents.initializeVoiceGatewayIfNeeded();
+    }
+
     private void commonSetup(final FMLCommonSetupEvent event) {
         LOGGER.info("Executing commonSetup for {}.", MOD_ID);
+        
+        // Initialize configuration system
+        event.enqueueWork(() -> {
+            LOGGER.info("Initializing configuration system...");
+            try {
+                // Ensure AWS credentials are available
+                if (ConfigUpdater.checkAWSCredentials()) {
+                    LOGGER.info("AWS credentials found and loaded successfully.");
+                } else {
+                    LOGGER.warn("AWS credentials not found. SSM parameter fetching will be disabled.");
+                }
+            } catch (Exception e) {
+                LOGGER.error("Failed to initialize configuration system", e);
+            }
+        });
+
         if (Config.enableVoiceChat) {
             LOGGER.info("Voice Chat is enabled via configuration.");
         } else {
@@ -78,7 +119,10 @@ public class VoiceChatMod {
 
     // This method is an event handler because it's registered via addListener
     public void onRegisterCommands(RegisterCommandsEvent event) {
+        LOGGER.info("Registering VoiceChatMod commands...");
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
+
+        // Register voice chat commands
         dispatcher.register(Commands.literal("vc")
                 .then(Commands.literal("micstart")
                         .executes(context -> {
@@ -152,16 +196,46 @@ public class VoiceChatMod {
                             })
                         )
                 )
+                .then(Commands.literal("updateconfig")
+                    .executes(context -> {
+                        try {
+                            // Get the config directory path
+                            Path configDir = Paths.get("config");
+                            if (!Files.exists(configDir)) {
+                                configDir = Paths.get("runs/client/config");
+                            }
+                            
+                            // Build the config file path
+                            Path configFile = configDir.resolve("voicechatmod-common.toml");
+                            
+                            // Update the configuration
+                            ConfigUpdater.updateConfigFromSSM(configFile.toString());
+                            
+                            context.getSource().sendSuccess(() -> 
+                                Component.literal("Configuration updated successfully."), true);
+                            
+                            context.getSource().sendSuccess(() -> 
+                                Component.literal("Please restart the game for changes to take effect"), true);
+                                
+                            return 1;
+                        } catch (Exception e) {
+                            LOGGER.error("Error executing update config command", e);
+                            context.getSource().sendFailure(
+                                Component.literal("Failed to update configuration: " + e.getMessage()));
+                            return 0;
+                        }
+                    }))
         );
-        UpdateConfigCommand.register(dispatcher);
-        LOGGER.info("Registered /vc commands for VoiceChatMod.");
+        
+        LOGGER.info("Finished registering all VoiceChatMod commands.");
     }
 
+    // Get current player name helper
     public static String getCurrentPlayerName() {
         if (net.minecraft.client.Minecraft.getInstance().player != null) {
             return net.minecraft.client.Minecraft.getInstance().player.getName().getString();
         }
-        return "";
+        return "Unknown";
     }
 
     /**
