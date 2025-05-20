@@ -20,10 +20,7 @@ public class Config
     // The builder for creating the configuration specification.
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
-    // --- Voice Chat Configuration Definitions ---
-    // These are the definitions of our configuration options.
-    // They will be used to generate the config file and to retrieve values.
-
+    // Voice Chat Configuration
     private static final ModConfigSpec.BooleanValue ENABLE_VOICE_CHAT_SPEC = BUILDER
             .comment("Enable or disable the voice chat functionality globally.")
             .define("enableVoiceChat", true);
@@ -31,14 +28,6 @@ public class Config
     private static final ModConfigSpec.DoubleValue DEFAULT_VOLUME_SPEC = BUILDER
             .comment("Default voice chat volume (0.0 to 1.0). This might be overridden by client-side settings later.")
             .defineInRange("defaultVolume", 0.7, 0.0, 1.0);
-
-    private static final ModConfigSpec.ConfigValue<String> VOICE_GATEWAY_URL_SPEC = BUILDER
-            .comment("The WebSocket URL for the Voice Gateway (AWS API Gateway). Example: wss://<api-id>.execute-api.<region>.amazonaws.com/<stage>")
-            .define("voiceGatewayUrl", "YOUR_WEBSOCKET_API_GATEWAY_URL_HERE");
-
-    private static final ModConfigSpec.ConfigValue<String> VOICE_GATEWAY_API_KEY_SPEC = BUILDER
-            .comment("Optional API key for AWS API Gateway authentication. Leave empty if not required.")
-            .define("voiceGatewayApiKey", "");
 
     private static final ModConfigSpec.IntValue MAX_VOICE_DISTANCE_SPEC = BUILDER
             .comment("Maximum distance (in blocks) at which players can hear each other. Set to 0 for global chat (if server supports).")
@@ -52,6 +41,23 @@ public class Config
             .comment("Delay in seconds between reconnection attempts.")
             .defineInRange("reconnectionDelay", 5, 1, 30);
 
+    // AWS Configuration
+    private static final ModConfigSpec.ConfigValue<String> WEBSOCKET_STAGE_URL_SPEC = BUILDER
+            .comment("WebSocket Gateway URL for voice chat communication")
+            .define("websocketStageUrl", "");
+
+    private static final ModConfigSpec.ConfigValue<String> WEBSOCKET_API_KEY_SPEC = BUILDER
+            .comment("API Key for WebSocket Gateway authentication")
+            .define("websocketApiKey", "");
+
+    private static final ModConfigSpec.ConfigValue<String> USER_POOL_ID_SPEC = BUILDER
+            .comment("Cognito User Pool ID for authentication")
+            .define("userPoolId", "");
+
+    private static final ModConfigSpec.ConfigValue<String> USER_POOL_CLIENT_ID_SPEC = BUILDER
+            .comment("Cognito User Pool Client ID for authentication")
+            .define("userPoolClientId", "");
+
     // The actual config spec
     public static final ModConfigSpec SPEC = BUILDER.build();
 
@@ -63,6 +69,8 @@ public class Config
     public static String voiceGatewayApiKey;
     public static int reconnectionAttempts;
     public static int reconnectionDelay;
+    public static String userPoolId;
+    public static String userPoolClientId;
 
     /**
      * This method is automatically called by NeoForge when a mod config file for this mod is loaded or reloaded.
@@ -76,29 +84,38 @@ public class Config
 
     @SubscribeEvent
     static void onLoad(final ModConfigEvent event) {
-        // Check if the loaded config is our common config.
         if (event.getConfig().getSpec() == Config.SPEC) {
-            VoiceChatMod.LOGGER.info("Loading VoiceChatMod common configuration...");
+            VoiceChatMod.LOGGER.info("Loading VoiceChatMod configuration...");
             
+            // Load basic configuration from TOML
             enableVoiceChat = ENABLE_VOICE_CHAT_SPEC.get();
             defaultVolume = DEFAULT_VOLUME_SPEC.get();
             maxVoiceDistance = MAX_VOICE_DISTANCE_SPEC.get();
-            voiceGatewayUrl = VOICE_GATEWAY_URL_SPEC.get();
-            voiceGatewayApiKey = VOICE_GATEWAY_API_KEY_SPEC.get();
             reconnectionAttempts = RECONNECTION_ATTEMPTS_SPEC.get();
             reconnectionDelay = RECONNECTION_DELAY_SPEC.get();
 
-            // Validate WebSocket Gateway configuration
+            // Load AWS configuration from TOML
+            voiceGatewayUrl = WEBSOCKET_STAGE_URL_SPEC.get();
+            voiceGatewayApiKey = WEBSOCKET_API_KEY_SPEC.get();
+            userPoolId = USER_POOL_ID_SPEC.get();
+            userPoolClientId = USER_POOL_CLIENT_ID_SPEC.get();
+
+            // Validate configuration
             boolean configValid = true;
-            if (voiceGatewayUrl == null || voiceGatewayUrl.equals("YOUR_WEBSOCKET_API_GATEWAY_URL_HERE")) {
-                VoiceChatMod.LOGGER.error("Voice Gateway WebSocket URL is not configured in voicechatmod-common.toml!");
+            if (voiceGatewayUrl.isEmpty()) {
+                VoiceChatMod.LOGGER.error("WebSocket URL not configured!");
+                configValid = false;
+            }
+            if (voiceGatewayApiKey.isEmpty()) {
+                VoiceChatMod.LOGGER.error("API Key not configured!");
                 configValid = false;
             }
 
             if (!configValid) {
-                VoiceChatMod.LOGGER.error("Please configure the Voice Gateway settings in config/voicechatmod-common.toml!");
+                VoiceChatMod.LOGGER.error("Failed to load required configuration. Voice chat will be disabled.");
+                enableVoiceChat = false;
             } else {
-                VoiceChatMod.LOGGER.info("Voice Gateway configuration loaded and validated successfully.");
+                VoiceChatMod.LOGGER.info("Voice Gateway configuration loaded successfully.");
             }
         } else {
             VoiceChatMod.LOGGER.debug("Ignoring config load event for non-matching spec: {}", event.getConfig().getFileName());

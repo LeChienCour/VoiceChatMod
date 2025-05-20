@@ -30,6 +30,7 @@ import net.dsandov.voicechatmod.audio.AudioManager;
 import net.dsandov.voicechatmod.audio.MicrophoneManager;
 import net.dsandov.voicechatmod.aws.VoiceGatewayClient;
 import java.util.Base64;
+import net.dsandov.voicechatmod.commands.UpdateConfigCommand;
 
 @Mod(VoiceChatMod.MOD_ID)
 public class VoiceChatMod {
@@ -152,6 +153,7 @@ public class VoiceChatMod {
                         )
                 )
         );
+        UpdateConfigCommand.register(dispatcher);
         LOGGER.info("Registered /vc commands for VoiceChatMod.");
     }
 
