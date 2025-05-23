@@ -34,6 +34,8 @@ import net.dsandov.voicechatmod.util.ConfigUpdater;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 
 @Mod(VoiceChatMod.MOD_ID)
 public class VoiceChatMod {
@@ -124,6 +126,37 @@ public class VoiceChatMod {
 
         // Register voice chat commands
         dispatcher.register(Commands.literal("vc")
+                .then(Commands.literal("ping")
+                    .executes(context -> {
+                        ClientModEvents.executeClientSideTask(() -> {
+                            if (ClientModEvents.voiceGatewayClient != null) {
+                                LOGGER.info("Sending test message to WebSocket");
+                                // Send a test message
+                                JsonObject testMessage = new JsonObject();
+                                testMessage.addProperty("action", "ping");
+                                testMessage.addProperty("message", "Hello from client");
+                                testMessage.addProperty("timestamp", java.time.Instant.now().toString());
+                                
+                                String testMessageStr = new Gson().toJson(testMessage);
+                                LOGGER.info("Test message content: {}", testMessageStr);
+                                
+                                ClientModEvents.voiceGatewayClient.getWebSocket().sendText(testMessageStr, true)
+                                    .whenComplete((result, error) -> {
+                                        if (error != null) {
+                                            LOGGER.error("Failed to send test message: {}", error.getMessage());
+                                            context.getSource().sendFailure(Component.literal("Failed to send test message: " + error.getMessage()));
+                                        } else {
+                                            LOGGER.info("Test message sent successfully");
+                                            context.getSource().sendSuccess(() -> Component.literal("Test message sent successfully"), false);
+                                        }
+                                    });
+                            } else {
+                                LOGGER.error("VoiceGatewayClient is not initialized");
+                                context.getSource().sendFailure(Component.literal("VoiceGatewayClient is not initialized"));
+                            }
+                        });
+                        return 1;
+                    }))
                 .then(Commands.literal("micstart")
                         .executes(context -> {
                             ClientModEvents.executeClientSideTask(() -> {
