@@ -85,43 +85,32 @@ public class AudioManager {
     /**
      * Plays the given audio data.
      *
-     * @param encodedAudioData The byte array containing the audio data to play.
+     * @param audioData The byte array containing the audio data to play.
      * @param offset The starting offset in the byte array.
      * @param length The number of bytes to play from the array.
      */
-    public void playAudio(byte[] encodedAudioData, int offset, int length) {
+    public void playAudio(byte[] audioData, int offset, int length) {
         if (!isInitialized || this.sourceDataLine == null || !this.sourceDataLine.isOpen()) {
             VoiceChatMod.LOGGER.warn("AudioManager not initialized or line closed. Cannot play audio. isInitialized: {}, line null: {}, line open: {}",
                     isInitialized, this.sourceDataLine == null, (this.sourceDataLine != null && this.sourceDataLine.isOpen()));
             return;
         }
 
-        if (encodedAudioData == null || length <= 0) {
-            VoiceChatMod.LOGGER.warn("Encoded audio data is null or length is zero. Nothing to play.");
+        if (audioData == null || length <= 0) {
+            VoiceChatMod.LOGGER.warn("Audio data is null or length is zero. Nothing to play.");
             return;
         }
 
-        // Create a precise copy of the encoded data chunk to decode
-        byte[] currentEncodedChunk = new byte[length];
-        System.arraycopy(encodedAudioData, offset, currentEncodedChunk, 0, length);
-
-        // Decode the audio data
-        byte[] pcmDataToPlay = this.audioDecoder.decode(currentEncodedChunk); // Use the decoder
-
-        if (pcmDataToPlay == null || pcmDataToPlay.length == 0) {
-            VoiceChatMod.LOGGER.warn("Decoding produced null or empty PCM data. Nothing to play.");
-            return;
-        }
-
-        VoiceChatMod.LOGGER.info("Attempting to play {} bytes of decoded PCM audio data.", pcmDataToPlay.length);
         try {
-            int bytesWritten = sourceDataLine.write(pcmDataToPlay, 0, pcmDataToPlay.length);
-            VoiceChatMod.LOGGER.debug("Wrote {} bytes to SourceDataLine for playback.", bytesWritten);
-            if (bytesWritten != pcmDataToPlay.length) {
-                VoiceChatMod.LOGGER.warn("Not all decoded bytes were written to SourceDataLine! Expected: {}, Actual: {}", pcmDataToPlay.length, bytesWritten);
+            // Write directly to the source line for local playback
+            int bytesWritten = sourceDataLine.write(audioData, offset, length);
+            VoiceChatMod.LOGGER.debug("Wrote {} bytes to audio output", bytesWritten);
+            
+            if (bytesWritten != length) {
+                VoiceChatMod.LOGGER.warn("Not all bytes were written to audio output! Expected: {}, Actual: {}", length, bytesWritten);
             }
-        } catch (IllegalArgumentException e) {
-            VoiceChatMod.LOGGER.error("Illegal argument while writing decoded PCM to SourceDataLine.", e);
+        } catch (Exception e) {
+            VoiceChatMod.LOGGER.error("Error during audio playback", e);
         }
     }
 

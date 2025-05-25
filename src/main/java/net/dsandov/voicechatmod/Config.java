@@ -41,6 +41,19 @@ public class Config
             .comment("Delay in seconds between reconnection attempts.")
             .defineInRange("reconnectionDelay", 5, 1, 30);
 
+    // Microphone Configuration
+    private static final ModConfigSpec.ConfigValue<String> SELECTED_MICROPHONE_SPEC = BUILDER
+            .comment("The name of the selected microphone device. Leave empty to use system default.")
+            .define("selectedMicrophone", "");
+
+    private static final ModConfigSpec.BooleanValue USE_SYSTEM_DEFAULT_MIC_SPEC = BUILDER
+            .comment("Whether to use the system default microphone instead of a specific device.")
+            .define("useSystemDefaultMic", true);
+
+    private static final ModConfigSpec.DoubleValue MIC_BOOST_SPEC = BUILDER
+            .comment("Microphone boost/gain level (1.0 is normal, increase for quiet mics).")
+            .defineInRange("microphoneBoost", 1.0, 0.1, 5.0);
+
     // AWS Configuration
     private static final ModConfigSpec.ConfigValue<String> WEBSOCKET_STAGE_URL_SPEC = BUILDER
             .comment("WebSocket Gateway URL for voice chat communication")
@@ -71,6 +84,9 @@ public class Config
     public static int reconnectionDelay;
     public static String userPoolId;
     public static String userPoolClientId;
+    public static String selectedMicrophone;
+    public static boolean useSystemDefaultMic;
+    public static double microphoneBoost;
 
     /**
      * This method is automatically called by NeoForge when a mod config file for this mod is loaded or reloaded.
@@ -115,12 +131,21 @@ public class Config
         userPoolId = USER_POOL_ID_SPEC.get();
         userPoolClientId = USER_POOL_CLIENT_ID_SPEC.get();
 
+        // Load microphone configuration
+        selectedMicrophone = SELECTED_MICROPHONE_SPEC.get();
+        useSystemDefaultMic = USE_SYSTEM_DEFAULT_MIC_SPEC.get();
+        microphoneBoost = MIC_BOOST_SPEC.get();
+
         // Log configuration state
         VoiceChatMod.LOGGER.info("Voice Gateway Configuration:");
         VoiceChatMod.LOGGER.info("  WebSocket URL: {}", websocketStageUrl.isEmpty() ? "Not configured" : "Configured");
         VoiceChatMod.LOGGER.info("  API Key: {}", websocketApiKey.isEmpty() ? "Not configured" : "Configured");
         VoiceChatMod.LOGGER.info("  Max Reconnect Attempts: {}", reconnectionAttempts);
         VoiceChatMod.LOGGER.info("  Reconnect Delay: {} seconds", reconnectionDelay);
+        VoiceChatMod.LOGGER.info("Microphone Configuration:");
+        VoiceChatMod.LOGGER.info("  Using System Default: {}", useSystemDefaultMic);
+        VoiceChatMod.LOGGER.info("  Selected Device: {}", selectedMicrophone.isEmpty() ? "Not configured" : selectedMicrophone);
+        VoiceChatMod.LOGGER.info("  Microphone Boost: {}", microphoneBoost);
     }
 
     /**
@@ -186,5 +211,28 @@ public class Config
 
         // Validate the new configuration
         validateAWSConfig();
+    }
+
+    /**
+     * Updates the microphone configuration values
+     * @param deviceName The name of the selected microphone device
+     * @param useDefault Whether to use the system default microphone
+     * @param boost The microphone boost/gain level
+     */
+    public static void updateMicrophoneConfig(String deviceName, boolean useDefault, double boost) {
+        VoiceChatMod.LOGGER.info("Updating microphone configuration values...");
+        
+        SELECTED_MICROPHONE_SPEC.set(deviceName);
+        USE_SYSTEM_DEFAULT_MIC_SPEC.set(useDefault);
+        MIC_BOOST_SPEC.set(boost);
+
+        selectedMicrophone = deviceName;
+        useSystemDefaultMic = useDefault;
+        microphoneBoost = boost;
+
+        VoiceChatMod.LOGGER.info("Microphone configuration updated:");
+        VoiceChatMod.LOGGER.info("  Using System Default: {}", useSystemDefaultMic);
+        VoiceChatMod.LOGGER.info("  Selected Device: {}", selectedMicrophone.isEmpty() ? "Not configured" : selectedMicrophone);
+        VoiceChatMod.LOGGER.info("  Microphone Boost: {}", microphoneBoost);
     }
 }

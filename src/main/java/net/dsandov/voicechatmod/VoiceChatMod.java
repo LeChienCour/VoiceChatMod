@@ -36,6 +36,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import java.util.List;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.arguments.DoubleArgumentType;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 @Mod(VoiceChatMod.MOD_ID)
 public class VoiceChatMod {
@@ -258,6 +265,82 @@ public class VoiceChatMod {
                             return 0;
                         }
                     }))
+                .then(Commands.literal("mic")
+                    .then(Commands.literal("list")
+                        .executes(context -> {
+                            ClientModEvents.executeClientSideTask(() -> {
+                                List<String> mics = MicrophoneManager.getAvailableMicrophones();
+                                if (mics.isEmpty()) {
+                                    context.getSource().sendFailure(Component.literal("No microphones found."));
+                                } else {
+                                    context.getSource().sendSuccess(() -> Component.literal("Available microphones:"), false);
+                                    for (String mic : mics) {
+                                        context.getSource().sendSuccess(() -> Component.literal("- " + mic), false);
+                                    }
+                                    // Show current selection
+                                    String currentMic = ClientModEvents.microphoneManager != null ? 
+                                        ClientModEvents.microphoneManager.getCurrentMicrophoneName() : null;
+                                    if (currentMic != null) {
+                                        context.getSource().sendSuccess(() -> Component.literal("Current selection: " + currentMic), false);
+                                    }
+                                }
+                            });
+                            return 1;
+                        })
+                    )
+                    .then(Commands.literal("select")
+                        .then(Commands.argument("device", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String deviceName = StringArgumentType.getString(context, "device");
+                                ClientModEvents.executeClientSideTask(() -> {
+                                    if (ClientModEvents.microphoneManager != null) {
+                                        if (ClientModEvents.microphoneManager.changeMicrophone(deviceName)) {
+                                            context.getSource().sendSuccess(() -> Component.literal("Switched to microphone: " + deviceName), true);
+                                        } else {
+                                            context.getSource().sendFailure(Component.literal("Failed to switch to microphone: " + deviceName));
+                                        }
+                                    } else {
+                                        context.getSource().sendFailure(Component.literal("MicrophoneManager not initialized on client."));
+                                    }
+                                });
+                                return 1;
+                            })
+                        )
+                    )
+                    .then(Commands.literal("boost")
+                        .then(Commands.argument("level", DoubleArgumentType.doubleArg(0.1, 5.0))
+                            .executes(context -> {
+                                double boost = DoubleArgumentType.getDouble(context, "level");
+                                ClientModEvents.executeClientSideTask(() -> {
+                                    if (ClientModEvents.microphoneManager != null) {
+                                        ClientModEvents.microphoneManager.setMicrophoneBoost(boost);
+                                        context.getSource().sendSuccess(() -> Component.literal("Set microphone boost to: " + boost), true);
+                                    } else {
+                                        context.getSource().sendFailure(Component.literal("MicrophoneManager not initialized on client."));
+                                    }
+                                });
+                                return 1;
+                            })
+                        )
+                    )
+                    .then(Commands.literal("default")
+                        .executes(context -> {
+                            ClientModEvents.executeClientSideTask(() -> {
+                                if (ClientModEvents.microphoneManager != null) {
+                                    Config.updateMicrophoneConfig("", true, 1.0);
+                                    if (ClientModEvents.microphoneManager.initialize()) {
+                                        context.getSource().sendSuccess(() -> Component.literal("Switched to system default microphone"), true);
+                                    } else {
+                                        context.getSource().sendFailure(Component.literal("Failed to switch to system default microphone"));
+                                    }
+                                } else {
+                                    context.getSource().sendFailure(Component.literal("MicrophoneManager not initialized on client."));
+                                }
+                            });
+                            return 1;
+                        })
+                    )
+                )
         );
         
         LOGGER.info("Finished registering all VoiceChatMod commands.");

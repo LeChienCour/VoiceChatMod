@@ -1,6 +1,7 @@
 package net.dsandov.voicechatmod.audio;
 
 import net.dsandov.voicechatmod.VoiceChatMod; // For logging
+import net.dsandov.voicechatmod.Config;
 import net.minecraft.client.Minecraft;
 import net.dsandov.voicechatmod.aws.VoiceGatewayClient;
 
@@ -10,6 +11,8 @@ import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Manages microphone capture and audio streaming.
@@ -35,6 +38,7 @@ public class MicrophoneManager {
     private final ArrayBlockingQueue<byte[]> audioQueue;
     private Thread processingThread;
     private final AtomicBoolean isProcessing = new AtomicBoolean(false);
+    private float gainControl = 1.0f;
 
     // --- START OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
     /**
@@ -60,25 +64,45 @@ public class MicrophoneManager {
      * @return The desired AudioFormat.
      */
     private AudioFormat getDesiredAudioFormat() {
-        // Sample rate: 16000 Hz (16 kHz) - good quality for voice
-        float sampleRate = 16000.0F;
-        // Sample size in bits: 16-bit - standard for good quality
-        int sampleSizeInBits = 16;
-        // Channels: 1 for mono, 2 for stereo. Mono is sufficient for voice chat.
-        int channels = 1;
-        // Signed: true for PCM data that ranges from negative to positive values.
-        boolean signed = true;
-        // Big-endian: false for little-endian, which is common for PCM WAVE audio.
-        boolean bigEndian = false;
-
-        return new AudioFormat(sampleRate, sampleSizeInBits, channels, signed, bigEndian);
+        return AUDIO_FORMAT;
     }
 
     /**
-     * Initializes the microphone by trying to find and open a TargetDataLine.
-     * It will first attempt to use the HARDCODED_TEST_MICROPHONE_NAME if specified.
-     *
-     * @return true if initialization was successful, false otherwise.
+     * Gets a list of available microphone devices
+     * @return List of microphone device names
+     */
+    public static List<String> getAvailableMicrophones() {
+        List<String> microphoneNames = new ArrayList<>();
+        Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
+        
+        for (Mixer.Info mixerInfo : mixerInfos) {
+            Mixer mixer = AudioSystem.getMixer(mixerInfo);
+            Line.Info[] targetLineInfos = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT));
+
+            if (targetLineInfos.length > 0) {
+                microphoneNames.add(mixerInfo.getName());
+                VoiceChatMod.LOGGER.debug("Found microphone: {} ({})", mixerInfo.getName(), mixerInfo.getDescription());
+            }
+        }
+        
+        return microphoneNames;
+    }
+
+    /**
+     * Gets the currently selected microphone device name
+     * @return The name of the current microphone device, or null if using system default
+     */
+    public String getCurrentMicrophoneName() {
+        if (microphoneLine != null) {
+            Port.Info portInfo = (Port.Info) microphoneLine.getLineInfo();
+            return portInfo.getName();
+        }
+        return null;
+    }
+
+    /**
+     * Initializes the microphone using the configuration settings
+     * @return true if initialization was successful, false otherwise
      */
     public boolean initialize() {
         try {
@@ -89,13 +113,95 @@ public class MicrophoneManager {
                 return false;
             }
 
-            microphoneLine = (TargetDataLine) AudioSystem.getLine(info);
+            // Try to get the configured microphone if one is selected
+            if (!Config.useSystemDefaultMic && !Config.selectedMicrophone.isEmpty()) {
+                Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
+                for (Mixer.Info mixerInfo : mixerInfos) {
+                    if (mixerInfo.getName().equals(Config.selectedMicrophone)) {
+                        Mixer mixer = AudioSystem.getMixer(mixerInfo);
+                        Line.Info[] targetLineInfos = mixer.getTargetLineInfo(info);
+                        
+                        if (targetLineInfos.length > 0) {
+                            microphoneLine = (TargetDataLine) mixer.getLine(targetLineInfos[0]);
+                            VoiceChatMod.LOGGER.info("Using configured microphone: {}", mixerInfo.getName());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If no specific microphone was configured or found, use the default
+            if (microphoneLine == null) {
+                microphoneLine = (TargetDataLine) AudioSystem.getLine(info);
+                VoiceChatMod.LOGGER.info("Using default microphone");
+            }
+
             microphoneLine.open(AUDIO_FORMAT);
+            
+            // Apply microphone boost if configured
+            if (microphoneLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+                FloatControl gainControl = (FloatControl) microphoneLine.getControl(FloatControl.Type.MASTER_GAIN);
+                float gain = (float) (Math.log10(Config.microphoneBoost) * 20.0f);
+                gain = Math.max(gainControl.getMinimum(), Math.min(gain, gainControl.getMaximum()));
+                gainControl.setValue(gain);
+                VoiceChatMod.LOGGER.info("Applied microphone boost: {}dB", gain);
+            }
+
             VoiceChatMod.LOGGER.info("Microphone line opened successfully.");
             return true;
+       
         } catch (Exception e) {
             VoiceChatMod.LOGGER.error("Failed to initialize microphone", e);
             return false;
+        }
+    }
+
+    /**
+     * Changes the microphone device
+     * @param deviceName The name of the microphone device to use
+     * @return true if the change was successful, false otherwise
+     */
+    public boolean changeMicrophone(String deviceName) {
+        boolean wasCapturing = isCapturing.get();
+        
+        // Stop capture if it's running
+        if (wasCapturing) {
+            stopCapture();
+        }
+
+        // Close the current line if it exists
+        if (microphoneLine != null) {
+            microphoneLine.close();
+            microphoneLine = null;
+        }
+
+        // Update the configuration
+        Config.updateMicrophoneConfig(deviceName, false, Config.microphoneBoost);
+
+        // Try to initialize with the new device
+        boolean success = initialize();
+
+        // Restart capture if it was running before
+        if (success && wasCapturing) {
+            startCapture();
+        }
+
+        return success;
+    }
+
+    /**
+     * Sets the microphone boost level
+     * @param boost The boost level (1.0 is normal, greater than 1.0 to boost, less than 1.0 to reduce)
+     */
+    public void setMicrophoneBoost(double boost) {
+        Config.updateMicrophoneConfig(Config.selectedMicrophone, Config.useSystemDefaultMic, boost);
+        
+        if (microphoneLine != null && microphoneLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+            FloatControl gainControl = (FloatControl) microphoneLine.getControl(FloatControl.Type.MASTER_GAIN);
+            float gain = (float) (Math.log10(boost) * 20.0f);
+            gain = Math.max(gainControl.getMinimum(), Math.min(gain, gainControl.getMaximum()));
+            gainControl.setValue(gain);
+            VoiceChatMod.LOGGER.info("Updated microphone boost: {}dB", gain);
         }
     }
 
@@ -140,6 +246,11 @@ public class MicrophoneManager {
                     byte[] audioData = new byte[count];
                     System.arraycopy(buffer, 0, audioData, 0, count);
                     
+                    // Add to loopback buffer first
+                    VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(audioData, count);
+                    VoiceChatMod.LOGGER.debug("Added {} bytes to loopback buffer", count);
+                    
+                    // Then try to send to remote if available
                     if (!audioQueue.offer(audioData, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                         VoiceChatMod.LOGGER.warn("Audio queue full, dropping packet");
                     }
