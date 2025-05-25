@@ -15,10 +15,11 @@ group = mod_group_id
 // Repositories where Gradle looks for dependencies.
 // We need Maven Central for the AWS SDK.
 repositories {
-    mavenLocal()
-    // Add Maven Central repository for AWS SDK and other common libraries
-    // Maven Central is a primary repository for Java libraries.
     mavenCentral()
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/'
+    }
 }
 
 base {
@@ -59,29 +60,9 @@ configurations {
 }
 
 dependencies {
-    // Minecraft and NeoForge dependencies
-    // Specify the version of Minecraft to use.
     implementation "net.neoforged:neoforge:${neo_version}"
-
-    // AWS SDK for Java v2 dependencies
-    // We use a Bill of Materials (BOM) to manage AWS SDK dependency versions.
-    // Replace '2.25.48' with the latest stable version of the AWS SDK BOM.
-    // You can find the latest version on Maven Central by searching for 'software.amazon.awssdk:bom'.
-    implementation platform('software.amazon.awssdk:bom:2.25.48') // Example version, use latest
-
-    // AWS AppSync client dependency
-    // This module is required to interact with AWS AppSync.
-    implementation 'software.amazon.awssdk:appsync'
-
-    // The AWS SDK v2 will automatically bring in a compatible HTTP client.
-    // Common choices include 'url-connection-client' (default for simple cases)
-    // or 'apache-client' (more robust, add 'software.amazon.awssdk:apache-client' if needed explicitly)
-    // For now, we'll rely on the default behavior.
-
-    // Example optional mod dependency with JEI (kept from original template)
-    // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
-    // compileOnly "mezz.jei:jei-${mc_version}-neoforge-api:${jei_version}"
-    // localRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
+    annotationProcessor "net.neoforged:neoforge:${neo_version}"
+    implementation 'com.google.code.gson:gson:2.10.1'
 }
 
 tasks.withType(ProcessResources).configureEach {

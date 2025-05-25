@@ -1,29 +1,60 @@
-// File: src/main/java/net/dsandov/voicechatmod/audio/MicrophoneManager.java
 package net.dsandov.voicechatmod.audio;
 
 import net.dsandov.voicechatmod.VoiceChatMod; // For logging
+import net.dsandov.voicechatmod.Config;
+import net.minecraft.client.Minecraft;
+import net.dsandov.voicechatmod.aws.VoiceGatewayClient;
 
 import javax.sound.sampled.*;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * Manages microphone capture and audio streaming.
+ */
 public class MicrophoneManager {
-
-    // The line from which audio data is read from the microphone
-    private TargetDataLine targetDataLine;
-    // The format of the audio data we want to capture
-    private AudioFormat audioFormat;
-
-    // Flag to indicate if audio capture is currently active
-    private volatile boolean isCapturing = false; // volatile as it might be accessed by multiple threads
-
-    // Thread for actually reading data from the microphone
+    private static final int SAMPLE_RATE = 16000;
+    private static final int SAMPLE_SIZE_BITS = 16;
+    private static final int CHANNELS = 1;
+    private static final boolean SIGNED = true;
+    private static final boolean BIG_ENDIAN = false;
+    private static final AudioFormat AUDIO_FORMAT = new AudioFormat(
+            SAMPLE_RATE, SAMPLE_SIZE_BITS, CHANNELS, SIGNED, BIG_ENDIAN);
+    
+    private static final int BUFFER_SIZE = 4096;
+    private static final int QUEUE_SIZE = 10;
+    private static final long QUEUE_OFFER_TIMEOUT_MS = 100;
+    
+    private TargetDataLine microphoneLine;
     private Thread captureThread;
+    private final AtomicBoolean isCapturing = new AtomicBoolean(false);
+    private AudioSender audioSender;
+    private String currentPlayerName = "Unknown";
+    private final ArrayBlockingQueue<byte[]> audioQueue;
+    private Thread processingThread;
+    private final AtomicBoolean isProcessing = new AtomicBoolean(false);
+    private float gainControl = 1.0f;
+
+    // --- START OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
+    /**
+     * Temporary constant to specify a preferred microphone for testing.
+     * To revert to default microphone selection behavior, set this to "" (empty string) or null.
+     * This makes it easy to find and change/remove this specific microphone preference later.
+     */
+    private static final String HARDCODED_TEST_MICROPHONE_NAME = "Microphone (HD Pro Webcam C920)";
+    // --- END OF EASILY REMOVABLE/MODIFIABLE MODULE FOR MICROPHONE SELECTION ---
 
     /**
      * Constructor for MicrophoneManager.
      * Initializes the desired audio format.
      */
     public MicrophoneManager() {
-        this.audioFormat = getDesiredAudioFormat();
+        audioQueue = new ArrayBlockingQueue<>(QUEUE_SIZE);
     }
 
     /**
@@ -33,197 +64,262 @@ public class MicrophoneManager {
      * @return The desired AudioFormat.
      */
     private AudioFormat getDesiredAudioFormat() {
-        // Sample rate: 16000 Hz (16 kHz) - good quality for voice
-        float sampleRate = 16000.0F;
-        // Sample size in bits: 16-bit - standard for good quality
-        int sampleSizeInBits = 16;
-        // Channels: 1 for mono, 2 for stereo. Mono is sufficient for voice chat.
-        int channels = 1;
-        // Signed: true for PCM data that ranges from negative to positive values.
-        boolean signed = true;
-        // Big-endian: false for little-endian, which is common for PCM WAVE audio.
-        boolean bigEndian = false;
-
-        return new AudioFormat(sampleRate, sampleSizeInBits, channels, signed, bigEndian);
+        return AUDIO_FORMAT;
     }
 
     /**
-     * Initializes the microphone by trying to find and open a TargetDataLine.
-     *
-     * @return true if initialization was successful, false otherwise.
+     * Gets a list of available microphone devices
+     * @return List of microphone device names
+     */
+    public static List<String> getAvailableMicrophones() {
+        List<String> microphoneNames = new ArrayList<>();
+        Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
+        
+        for (Mixer.Info mixerInfo : mixerInfos) {
+            Mixer mixer = AudioSystem.getMixer(mixerInfo);
+            Line.Info[] targetLineInfos = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT));
+
+            if (targetLineInfos.length > 0) {
+                microphoneNames.add(mixerInfo.getName());
+                VoiceChatMod.LOGGER.debug("Found microphone: {} ({})", mixerInfo.getName(), mixerInfo.getDescription());
+            }
+        }
+        
+        return microphoneNames;
+    }
+
+    /**
+     * Gets the currently selected microphone device name
+     * @return The name of the current microphone device, or null if using system default
+     */
+    public String getCurrentMicrophoneName() {
+        if (microphoneLine != null) {
+            Port.Info portInfo = (Port.Info) microphoneLine.getLineInfo();
+            return portInfo.getName();
+        }
+        return null;
+    }
+
+    /**
+     * Initializes the microphone using the configuration settings
+     * @return true if initialization was successful, false otherwise
      */
     public boolean initialize() {
-        if (this.targetDataLine != null && this.targetDataLine.isOpen()) {
-            VoiceChatMod.LOGGER.info("MicrophoneManager already initialized and line is open.");
-            return true;
-        }
-
         try {
-            // Get a TargetDataLine that matches the specified AudioFormat.
-            // This will attempt to get the system's default microphone supporting the format.
-            DataLine.Info dataLineInfo = new DataLine.Info(TargetDataLine.class, audioFormat);
-
-            // Check if any microphone supports this format
-            if (!AudioSystem.isLineSupported(dataLineInfo)) {
-                VoiceChatMod.LOGGER.error("Audio format not supported by any available microphone line.");
-                VoiceChatMod.LOGGER.error("Format details: {}", audioFormat.toString());
-                // You might want to try other formats or allow user selection here in a more advanced version.
+            DataLine.Info info = new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT);
+            
+            if (!AudioSystem.isLineSupported(info)) {
+                VoiceChatMod.LOGGER.error("Microphone line not supported");
                 return false;
             }
 
-            this.targetDataLine = (TargetDataLine) AudioSystem.getLine(dataLineInfo);
-            VoiceChatMod.LOGGER.info("TargetDataLine obtained for format: {}", audioFormat.toString());
-            return true;
+            // Try to get the configured microphone if one is selected
+            if (!Config.useSystemDefaultMic && !Config.selectedMicrophone.isEmpty()) {
+                Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
+                for (Mixer.Info mixerInfo : mixerInfos) {
+                    if (mixerInfo.getName().equals(Config.selectedMicrophone)) {
+                        Mixer mixer = AudioSystem.getMixer(mixerInfo);
+                        Line.Info[] targetLineInfos = mixer.getTargetLineInfo(info);
+                        
+                        if (targetLineInfos.length > 0) {
+                            microphoneLine = (TargetDataLine) mixer.getLine(targetLineInfos[0]);
+                            VoiceChatMod.LOGGER.info("Using configured microphone: {}", mixerInfo.getName());
+                            break;
+                        }
+                    }
+                }
+            }
 
-        } catch (LineUnavailableException e) {
-            VoiceChatMod.LOGGER.error("Failed to get a TargetDataLine: Line unavailable.", e);
-            this.targetDataLine = null; // Ensure it's null if failed
-            return false;
+            // If no specific microphone was configured or found, use the default
+            if (microphoneLine == null) {
+                microphoneLine = (TargetDataLine) AudioSystem.getLine(info);
+                VoiceChatMod.LOGGER.info("Using default microphone");
+            }
+
+            microphoneLine.open(AUDIO_FORMAT);
+            
+            // Apply microphone boost if configured
+            if (microphoneLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+                FloatControl gainControl = (FloatControl) microphoneLine.getControl(FloatControl.Type.MASTER_GAIN);
+                float gain = (float) (Math.log10(Config.microphoneBoost) * 20.0f);
+                gain = Math.max(gainControl.getMinimum(), Math.min(gain, gainControl.getMaximum()));
+                gainControl.setValue(gain);
+                VoiceChatMod.LOGGER.info("Applied microphone boost: {}dB", gain);
+            }
+
+            VoiceChatMod.LOGGER.info("Microphone line opened successfully.");
+            return true;
+       
         } catch (Exception e) {
-            VoiceChatMod.LOGGER.error("An unexpected error occurred during microphone initialization.", e);
-            this.targetDataLine = null;
+            VoiceChatMod.LOGGER.error("Failed to initialize microphone", e);
             return false;
         }
     }
 
+    /**
+     * Changes the microphone device
+     * @param deviceName The name of the microphone device to use
+     * @return true if the change was successful, false otherwise
+     */
+    public boolean changeMicrophone(String deviceName) {
+        boolean wasCapturing = isCapturing.get();
+        
+        // Stop capture if it's running
+        if (wasCapturing) {
+            stopCapture();
+        }
+
+        // Close the current line if it exists
+        if (microphoneLine != null) {
+            microphoneLine.close();
+            microphoneLine = null;
+        }
+
+        // Update the configuration
+        Config.updateMicrophoneConfig(deviceName, false, Config.microphoneBoost);
+
+        // Try to initialize with the new device
+        boolean success = initialize();
+
+        // Restart capture if it was running before
+        if (success && wasCapturing) {
+            startCapture();
+        }
+
+        return success;
+    }
+
+    /**
+     * Sets the microphone boost level
+     * @param boost The boost level (1.0 is normal, greater than 1.0 to boost, less than 1.0 to reduce)
+     */
+    public void setMicrophoneBoost(double boost) {
+        Config.updateMicrophoneConfig(Config.selectedMicrophone, Config.useSystemDefaultMic, boost);
+        
+        if (microphoneLine != null && microphoneLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+            FloatControl gainControl = (FloatControl) microphoneLine.getControl(FloatControl.Type.MASTER_GAIN);
+            float gain = (float) (Math.log10(boost) * 20.0f);
+            gain = Math.max(gainControl.getMinimum(), Math.min(gain, gainControl.getMaximum()));
+            gainControl.setValue(gain);
+            VoiceChatMod.LOGGER.info("Updated microphone boost: {}dB", gain);
+        }
+    }
 
     /**
      * Starts capturing audio from the microphone.
      * This method will open the microphone line, start it, and begin reading data in a separate thread.
      */
     public void startCapture() {
-        if (isCapturing) {
-            VoiceChatMod.LOGGER.warn("Capture is already in progress.");
+        if (microphoneLine == null || isCapturing.get()) {
             return;
         }
 
-        if (this.targetDataLine == null) {
-            VoiceChatMod.LOGGER.error("TargetDataLine is not initialized. Cannot start capture.");
-            VoiceChatMod.LOGGER.info("Attempting to re-initialize microphone...");
-            if (!initialize()) { // Try to initialize if it wasn't
-                VoiceChatMod.LOGGER.error("Re-initialization failed. Cannot start capture.");
-                return;
-            }
-        }
-
         try {
-            // Open the line with the specified audio format and a recommended buffer size.
-            // If the line is already open, this call does nothing.
-            if (!this.targetDataLine.isOpen()) {
-                this.targetDataLine.open(audioFormat, this.targetDataLine.getBufferSize()); // Use a good buffer size
-                VoiceChatMod.LOGGER.info("Microphone line opened.");
-            }
+            microphoneLine.start();
+            isCapturing.set(true);
+            isProcessing.set(true);
 
-
-            // Start the line. This allows data to begin flowing.
-            this.targetDataLine.start();
-            isCapturing = true;
-            VoiceChatMod.LOGGER.info("Microphone capture started.");
-
-            // Create and start the thread that will read audio data from the line.
-            captureThread = new Thread(this::captureAudioDataLoop, "VoiceChat-CaptureThread");
-            captureThread.setDaemon(true); // Make it a daemon thread so it doesn't prevent JVM shutdown
+            // Start capture thread
+            captureThread = new Thread(this::captureLoop, "VoiceChat-CaptureThread");
             captureThread.start();
 
-        } catch (LineUnavailableException e) {
-            VoiceChatMod.LOGGER.error("Failed to open or start microphone line: Line unavailable.", e);
-            isCapturing = false; // Ensure this is false if we failed
+            // Start processing thread
+            processingThread = new Thread(this::processLoop, "VoiceChat-ProcessingThread");
+            processingThread.start();
+
+            VoiceChatMod.LOGGER.info("Audio capture and processing threads started.");
         } catch (Exception e) {
-            VoiceChatMod.LOGGER.error("An unexpected error occurred while starting capture.", e);
-            isCapturing = false;
+            VoiceChatMod.LOGGER.error("Failed to start audio capture", e);
+            stopCapture();
         }
     }
 
-    /**
-     * The loop that runs in a separate thread to continuously read audio data.
-     */
-    private void captureAudioDataLoop() {
-        // Buffer to hold chunks of audio data read from the line.
-        // A common buffer size might be related to how often you want to send packets.
-        // For 16kHz, 16-bit mono, 20ms of audio = 16000 * (16/8) * 0.020 = 640 bytes.
-        byte[] buffer = new byte[640]; // Example: 20ms of audio data at 16kHz, 16-bit mono
-        int bytesRead;
+    private void captureLoop() {
+        VoiceChatMod.LOGGER.info("Audio capture loop started on thread: {}", 
+            Thread.currentThread().getName());
 
-        VoiceChatMod.LOGGER.info("Audio capture loop started on thread: {}", Thread.currentThread().getName());
-
-        while (isCapturing) {
-            if (targetDataLine == null || !targetDataLine.isOpen()) {
-                VoiceChatMod.LOGGER.error("TargetDataLine became null or closed during capture. Stopping loop.");
-                isCapturing = false; // Ensure the loop terminates
-                break;
-            }
-            // Read data from the TargetDataLine into the buffer.
-            // This call will block until data is available.
-            bytesRead = targetDataLine.read(buffer, 0, buffer.length);
-
-            if (bytesRead > 0) {
-                // TODO: Process the captured audio data (buffer)
-                // For now, we just log that we read some data.
-                // In the next steps, this data would be:
-                // 1. (Optionally) Encoded using an audio codec.
-                // 2. Sent over the network (via AppSync).
-                VoiceChatMod.LOGGER.debug("Read {} bytes from microphone.", bytesRead);
-
-                // Create a copy of the buffer if passing it to another thread or queue
-                // byte[] audioDataPacket = Arrays.copyOf(buffer, bytesRead);
-                // Send 'audioDataPacket' to the network module.
-            } else if (bytesRead == -1) {
-                // End of stream, which shouldn't happen for a microphone unless it's closed.
-                VoiceChatMod.LOGGER.warn("Microphone line reported end of stream.");
-                isCapturing = false; // Stop capturing
-                break;
+        byte[] buffer = new byte[BUFFER_SIZE];
+        while (isCapturing.get()) {
+            try {
+                int count = microphoneLine.read(buffer, 0, buffer.length);
+                if (count > 0) {
+                    byte[] audioData = new byte[count];
+                    System.arraycopy(buffer, 0, audioData, 0, count);
+                    
+                    // Add to loopback buffer first
+                    VoiceChatMod.ClientModEvents.appendToLoopbackBuffer(audioData, count);
+                    VoiceChatMod.LOGGER.debug("Added {} bytes to loopback buffer", count);
+                    
+                    // Then try to send to remote if available
+                    if (!audioQueue.offer(audioData, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        VoiceChatMod.LOGGER.warn("Audio queue full, dropping packet");
+                    }
+                }
+            } catch (Exception e) {
+                if (isCapturing.get()) {
+                    VoiceChatMod.LOGGER.error("Error during audio capture", e);
+                }
             }
         }
-        VoiceChatMod.LOGGER.info("Audio capture loop finished.");
     }
 
+    private void processLoop() {
+        while (isProcessing.get()) {
+            try {
+                byte[] audioData = audioQueue.poll(100, TimeUnit.MILLISECONDS);
+                if (audioData != null && audioSender != null) {
+                    String base64Audio = Base64.getEncoder().encodeToString(audioData);
+                    String timestamp = Instant.now().toString();
+                    // Get current player name before sending
+                    currentPlayerName = VoiceChatMod.getCurrentPlayerName();
+                    audioSender.sendAudioData(base64Audio, currentPlayerName, timestamp, "pcm", "base64");
+                    VoiceChatMod.LOGGER.debug("Processed and sent {} bytes of audio data", audioData.length);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                if (isProcessing.get()) {
+                    VoiceChatMod.LOGGER.error("Error processing audio data", e);
+                }
+            }
+        }
+    }
 
     /**
      * Stops capturing audio from the microphone.
      * This method will stop and close the microphone line.
      */
     public void stopCapture() {
-        if (!isCapturing) {
-            // VoiceChatMod.LOGGER.warn("Capture is not currently in progress.");
-            return;
+        isCapturing.set(false);
+        isProcessing.set(false);
+        
+        if (microphoneLine != null) {
+            microphoneLine.stop();
+            microphoneLine.flush();
         }
-
-        isCapturing = false; // Signal the capture thread to stop
-
+        
+        // Clear the audio queue
+        audioQueue.clear();
+        
+        // Wait for threads to finish
         if (captureThread != null) {
             try {
-                // Give the capture thread a moment to finish its current read and exit gracefully
-                captureThread.join(100); // Wait up to 100ms
+                captureThread.join(1000);
             } catch (InterruptedException e) {
-                VoiceChatMod.LOGGER.warn("Interrupted while waiting for capture thread to finish.", e);
-                Thread.currentThread().interrupt(); // Preserve interrupt status
+                Thread.currentThread().interrupt();
             }
+            captureThread = null;
         }
-        captureThread = null;
-
-
-        if (targetDataLine != null) {
+        
+        if (processingThread != null) {
             try {
-                // Check if it's running or open before trying to stop/close
-                if (targetDataLine.isRunning()) {
-                    targetDataLine.stop(); // Stop capturing data
-                    VoiceChatMod.LOGGER.info("Microphone line stopped.");
-                }
-                if (targetDataLine.isOpen()) {
-                    targetDataLine.flush(); // Discard any unread data
-                    targetDataLine.close(); // Release the system resource
-                    VoiceChatMod.LOGGER.info("Microphone line closed.");
-                }
-            } catch (Exception e) {
-                // Catching general exception as some implementations might throw SecurityException
-                // or others if the line state is unexpected.
-                VoiceChatMod.LOGGER.error("Error while stopping or closing microphone line.", e);
+                processingThread.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
-        } else {
-            VoiceChatMod.LOGGER.warn("TargetDataLine was null, cannot stop/close.");
+            processingThread = null;
         }
-
-        VoiceChatMod.LOGGER.info("Microphone capture stopped.");
     }
 
     /**
@@ -232,7 +328,7 @@ public class MicrophoneManager {
      * @return true if capturing, false otherwise.
      */
     public boolean isCapturing() {
-        return isCapturing && targetDataLine != null && targetDataLine.isOpen() && targetDataLine.isRunning();
+        return isCapturing.get();
     }
 
     // --- Helper methods for listing available microphones (for future use or debugging) ---
@@ -244,22 +340,34 @@ public class MicrophoneManager {
     public static void listAvailableMicrophones() {
         VoiceChatMod.LOGGER.info("--- Listing Available Audio Input Mixers ---");
         Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
-        AudioFormat desiredFormat = new MicrophoneManager().getDesiredAudioFormat(); // Get a sample format
-
+        
         for (Mixer.Info mixerInfo : mixerInfos) {
             Mixer mixer = AudioSystem.getMixer(mixerInfo);
-            Line.Info[] targetLineInfos = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, desiredFormat));
+            Line.Info[] targetLineInfos = mixer.getTargetLineInfo(new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT));
 
             if (targetLineInfos.length > 0) {
                 VoiceChatMod.LOGGER.info("Mixer: {} (Supports TargetDataLine for format)", mixerInfo.getName());
                 VoiceChatMod.LOGGER.debug("  Description: {}", mixerInfo.getDescription());
                 VoiceChatMod.LOGGER.debug("  Vendor: {}", mixerInfo.getVendor());
                 VoiceChatMod.LOGGER.debug("  Version: {}", mixerInfo.getVersion());
-            } else {
-                // Log all mixers even if they don't support the line, for general info
-                // VoiceChatMod.LOGGER.debug("Mixer: {} (Does NOT support TargetDataLine for format or no line available)", mixerInfo.getName());
             }
         }
         VoiceChatMod.LOGGER.info("--- End of Audio Input Mixer List ---");
+    }
+
+    public void setAudioSender(AudioSender sender) {
+        this.audioSender = sender;
+    }
+
+    public void setCurrentPlayerName(String playerName) {
+        this.currentPlayerName = playerName;
+    }
+
+    public void cleanup() {
+        stopCapture();
+        if (microphoneLine != null) {
+            microphoneLine.close();
+            microphoneLine = null;
+        }
     }
 }
