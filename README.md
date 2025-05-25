@@ -1,159 +1,183 @@
-# VoiceChatMod - Minecraft Voice Chat with AWS API Gateway WebSocket
+# Minecraft Voice Chat Mod
 
-A Minecraft mod that enables real-time voice chat using AWS API Gateway WebSocket for communication.
+A real-time voice chat modification for Minecraft that enables players to communicate through voice using WebSocket technology and AWS services.
 
-## Current Status
+## Features
 
-The mod is in development with the following features:
+- Real-time voice communication in Minecraft
+- Push-to-Talk (PTT) functionality
+- Echo mode for testing audio
+- Automatic reconnection handling
+- Distance-based voice chat (configurable)
+- Volume control
+- Server-side audio broadcasting
+- Uses system default microphone for input
 
-### Working Features
-- ✅ Microphone input capture and management
-- ✅ Audio playback system
-- ✅ WebSocket connection to AWS API Gateway
-- ✅ Configuration system with AWS SSM Parameter Store integration
-- ✅ Basic audio transmission
-- ✅ Push-to-Talk functionality
-- ✅ AWS credentials validation
-- ✅ Ping/Pong system for connection health monitoring
-- ✅ Automatic reconnection handling
+## Planned Features
 
-### Known Issues & Pending Tasks
-- ❌ WebSocket message format issues (binary data being sent as text)
-- ❌ Microphone selection not implemented (currently uses default device)
-- ❌ Excessive logging needs cleanup
-- ❌ Echo mode (hearing own voice) not working consistently
-- ❌ Player name not being set correctly in audio transmission
+- Microphone device selection UI
+- Per-player volume controls
+- Visual voice activity indicators
+- Mute functionality for specific players
+- Audio device hot-swapping support
+- Advanced audio settings (noise gate, etc.)
 
-### Recent Changes
-- Added binary message handling for audio data
-- Implemented periodic ping system (30-second intervals)
-- Enhanced connection state tracking
-- Improved error handling and logging structure
-- Fixed duplicate ping issues
+## Requirements
 
-## Setup
+- Minecraft (version supported by the mod)
+- AWS Account with the following services:
+  - API Gateway (WebSocket)
+  - Cognito User Pool (for authentication)
+- Working microphone (currently uses system default)
 
-### Prerequisites
+## Installation
 
-- Minecraft 1.21.4
-- NeoForge
-- AWS Account with:
-  - API Gateway WebSocket API configured
-  - SSM Parameter Store parameters set up
-  - Valid AWS credentials in ~/.aws/credentials
+1. Download the latest release from the releases page
+2. Place the .jar file in your Minecraft mods folder
+3. Configure the mod settings in `config/voicechatmod-common.toml`
+4. Ensure your default system microphone is properly configured
 
-### Configuration
+## Configuration
 
-The mod supports two ways of configuration:
+The mod can be configured through `voicechatmod-common.toml`:
 
-1. Manual configuration in `runs/client/config/voicechatmod-common.toml`:
 ```toml
-# Enable/disable voice chat functionality
+# Enable/disable voice chat
 enableVoiceChat = true
-# Default volume for voice chat (0.0 to 1.0)
+
+# Voice chat volume (0.0 to 1.0)
 defaultVolume = 0.7
-# Maximum distance for voice transmission (in blocks)
+
+# Maximum voice distance in blocks (0 for global)
 maxVoiceDistance = 64
-# Number of reconnection attempts
+
+# Reconnection settings
 reconnectionAttempts = 3
-# Delay between reconnection attempts (in seconds)
 reconnectionDelay = 5
-# WebSocket Gateway URL
-websocketStageUrl = "wss://your-api-id.execute-api.region.amazonaws.com/stage"
-# API key for authentication
-websocketApiKey = "your-api-key-here"
-# Cognito User Pool ID
+
+# WebSocket configuration
+websocketStageUrl = "your-websocket-url"
+websocketApiKey = "your-api-key"
+
+# Cognito configuration
 userPoolId = "your-user-pool-id"
-# Cognito User Pool Client ID
-userPoolClientId = "your-user-pool-client-id"
+userPoolClientId = "your-client-id"
 ```
 
-2. Automatic configuration using AWS SSM Parameter Store:
-   - Use the `/vc updateconfig` command in-game to fetch parameters from SSM
-   - Required SSM parameters:
-     - `/game-server/test/websocket/stage-url`
-     - `/game-server/test/websocket/api-key`
-     - `/game-server/test/cognito/user-pool-id`
-     - `/game-server/test/cognito/user-pool-client-id`
+## Commands
 
-### Commands
+- `/vc toggle` - Toggle voice chat on/off
+- `/vc volume <0.0-1.0>` - Adjust voice chat volume
+- `/vc echo` - Toggle echo mode
+- `/vc ping` - Test connection to voice server
+- `/vc distance <blocks>` - Set maximum voice distance
 
-- `/vc ping` - Test WebSocket connection
-- `/vc micstart` - Start microphone capture
-- `/vc micstop` - Stop microphone capture
-- `/vc playloopback` - Play back captured audio
-- `/vc echo on/off/status` - Control/check echo mode
-- `/vc updateconfig` - Update configuration from SSM
+## Technical Details
 
-### Controls
+### Voice Processing
 
-- Push-to-Talk: Default key 'V' (configurable in game settings)
+- Audio Format: PCM
+- Encoding: Base64
+- Sample Rate: 48kHz
+- Bits per Sample: 16
+- Channels: 1 (Mono)
+- Input Device: System default microphone
 
-## Development Roadmap
+### Network Protocol
 
-1. Fix WebSocket message format issues:
-   - Properly handle binary audio data
-   - Implement correct JSON message structure
-   - Clean up logging system
+The mod uses WebSocket for real-time communication with the following message formats:
 
-2. Implement microphone selection:
-   - Add UI for microphone device selection
-   - Save/load microphone preferences
-   - Handle device changes
-
-3. Audio System Improvements:
-   - Fix echo mode functionality
-   - Implement proper player name handling
-   - Add distance-based audio attenuation
-   - Optimize audio quality and latency
-
-4. Quality of Life:
-   - Add volume controls per player
-   - Implement mute functionality
-   - Add visual indicators for voice activity
-
-### WebSocket Message Structure
-
+#### Sending Audio
 ```json
-// Outgoing message (client to server)
 {
-  "action": "sendaudio",
-  "data": "base64_audio_data",
-  "format": "pcm",
-  "encoding": "base64",
-  "author": "player_name",
-  "timestamp": "iso8601_timestamp"
-}
-
-// Incoming message (server to client)
-{
-  "action": "audio",
-  "data": {
-    "audio": "base64_audio_data",
-    "format": "pcm",
-    "encoding": "base64",
+    "action": "sendaudio",
+    "data": "base64_audio_data",
     "author": "player_name",
-    "timestamp": "iso8601_timestamp"
-  }
-}
-
-// Ping message
-{
-  "action": "ping",
-  "data": {
-    "timestamp": "iso8601_timestamp"
-  }
+    "timestamp": "iso8601_timestamp",
+    "format": "pcm",
+    "encoding": "base64"
 }
 ```
 
-## Contributing
+#### Receiving Audio
+```json
+{
+    "status": "PROCESSED",
+    "message": {
+        "action": "sendaudio",
+        "data": {
+            "audio": "base64_audio_data",
+            "author": "player_name",
+            "timestamp": "iso8601_timestamp"
+        }
+    }
+}
+```
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### Error Handling
+
+The mod includes robust error handling for:
+- Connection failures
+- Authentication issues
+- Audio processing errors
+- Message parsing errors
+- Audio device errors
+
+Automatic reconnection attempts are made when connection is lost, with configurable retry attempts and delays.
+
+## Development
+
+### Building from Source
+
+1. Clone the repository
+2. Set up your development environment
+3. Run `./gradlew build`
+
+### Architecture
+
+The mod is structured into several key components:
+
+- `VoiceChatMod`: Main mod class and event handling
+- `VoiceGatewayClient`: WebSocket communication
+- `AudioCapture`: Microphone input handling (currently uses system default)
+- `AudioPlayback`: Audio output processing
+- `Config`: Configuration management
+
+## Troubleshooting
+
+Common issues and solutions:
+
+1. No audio transmission
+   - Check if your system default microphone is properly configured
+   - Test your microphone in Windows Sound Settings or similar
+   - Verify PTT key is correctly set
+   - Check WebSocket connection status
+   - Ensure microphone permissions are granted to Minecraft
+
+2. Connection issues
+   - Verify AWS credentials
+   - Check network connectivity
+   - Confirm WebSocket URL is correct
+
+3. Audio quality issues
+   - Check system default microphone settings
+   - Adjust microphone boost/gain in system settings
+   - Check network latency
+   - Verify audio device configuration
+
+4. Microphone not working
+   - Set desired microphone as system default in your OS settings
+   - Restart Minecraft after changing default audio device
+   - Check microphone privacy settings in your OS
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+[Your License Here]
+
+## Contributing
+
+Contributions are welcome! Please read our contributing guidelines before submitting pull requests.
+
+## Credits
+
+- Developer: Diego Sandoval

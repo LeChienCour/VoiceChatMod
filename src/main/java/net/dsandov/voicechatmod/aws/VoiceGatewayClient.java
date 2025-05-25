@@ -16,8 +16,6 @@ import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Handles WebSocket communication with the AWS API Gateway Voice Gateway.
@@ -37,13 +35,12 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     private final String apiKey;
     private final int maxReconnectAttempts;
     private final int reconnectDelay;
-    private ScheduledExecutorService pingScheduler;
-    private static final int PING_INTERVAL_SECONDS = 30;
+    private StringBuilder messageBuffer = new StringBuilder();
 
     // Message action constants
+    private static final String ACTION_PING = "ping";
     private static final String ACTION_SEND_AUDIO = "sendaudio";
     private static final String ACTION_AUDIO = "audio";
-    private static final String ACTION_PING = "ping";
 
     /**
      * Creates a new VoiceGatewayClient instance.
@@ -85,48 +82,10 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
                 isConnected.set(true);
                 reconnectAttempts.set(0);
                 VoiceChatMod.LOGGER.info("Connected to Voice Gateway at: {}", gatewayUrl);
-                // The ping scheduler will be started in onOpen
             });
         } catch (Exception e) {
             VoiceChatMod.LOGGER.error("Failed to connect to Voice Gateway", e);
             return CompletableFuture.failedFuture(e);
-        }
-    }
-
-    private void startPingScheduler() {
-        if (pingScheduler != null) {
-            stopPingScheduler(); // Ensure any existing scheduler is stopped
-        }
-        
-        VoiceChatMod.LOGGER.info("Starting ping scheduler");
-        pingScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "VoiceChat-Ping-Scheduler");
-            t.setDaemon(true); // Make it a daemon thread so it doesn't prevent JVM shutdown
-            return t;
-        });
-        
-        pingScheduler.scheduleAtFixedRate(() -> {
-            if (isConnected.get() && webSocket != null) {
-                sendPingMessage();
-            } else {
-                VoiceChatMod.LOGGER.warn("Skipping ping - connection not ready");
-            }
-        }, 0, PING_INTERVAL_SECONDS, TimeUnit.SECONDS);
-    }
-
-    private void stopPingScheduler() {
-        VoiceChatMod.LOGGER.info("Stopping ping scheduler");
-        if (pingScheduler != null && !pingScheduler.isShutdown()) {
-            pingScheduler.shutdown();
-            try {
-                if (!pingScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                    pingScheduler.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                pingScheduler.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-            pingScheduler = null;
         }
     }
 
@@ -138,8 +97,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     public void sendAudioData(String base64Audio, String author, String timestamp, String format, String encoding) {
         if (!isConnected.get() || webSocket == null) {
             VoiceChatMod.LOGGER.error("Cannot send audio: Not connected to Voice Gateway");
-            VoiceChatMod.LOGGER.info("Connection state - Connected: {}, WebSocket: {}, Attempts: {}", 
-                isConnected.get(), webSocket != null ? "Active" : "Null", reconnectAttempts.get());
             
             if (reconnectAttempts.get() < maxReconnectAttempts) {
                 VoiceChatMod.LOGGER.info("Attempting to reconnect...");
@@ -158,19 +115,15 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
             payload.addProperty("encoding", encoding);
 
             String message = GSON.toJson(payload);
-            VoiceChatMod.LOGGER.debug("Sending audio - Author: {}, Format: {}, Size: {} bytes", 
-                author, format, base64Audio.length());
             
             webSocket.sendText(message, true)
                     .whenComplete((result, error) -> {
                         if (error != null) {
                             VoiceChatMod.LOGGER.error("Failed to send audio: {}", error.getMessage());
-                        } else {
-                            VoiceChatMod.LOGGER.debug("Audio sent successfully");
                         }
                     });
         } catch (Exception e) {
-            VoiceChatMod.LOGGER.error("Error sending audio data", e);
+            VoiceChatMod.LOGGER.error("Error sending audio data: {}", e.getMessage());
         }
     }
 
@@ -207,35 +160,72 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
         try {
             String message = data.toString();
-            VoiceChatMod.LOGGER.debug("Received text message: {} bytes", message.length());
+            // Only log chunk info if there's an issue
+            if (!last) {
+                VoiceChatMod.LOGGER.debug("Received partial message chunk: {} bytes", message.length());
+            }
             
-            try {
-                JsonObject jsonMessage = GSON.fromJson(message, JsonObject.class);
-                String action = jsonMessage.has("action") ? jsonMessage.get("action").getAsString() : "unknown";
-                VoiceChatMod.LOGGER.debug("Processing {} action", action);
+            messageBuffer.append(message);
+            
+            if (last) {
+                String completeMessage = messageBuffer.toString();
+                messageBuffer = new StringBuilder();
                 
-                switch (action) {
-                    case ACTION_AUDIO:
-                        handleBroadcastAudio(jsonMessage);
-                        break;
-                    case "pong":
-                        VoiceChatMod.LOGGER.debug("Received pong response");
-                        break;
-                    case "error":
-                        VoiceChatMod.LOGGER.error("Server error: {}", 
-                            jsonMessage.has("message") ? jsonMessage.get("message").getAsString() : "No details");
-                        break;
-                    default:
-                        VoiceChatMod.LOGGER.debug("Unknown action: {}", action);
-                }
-            } catch (com.google.gson.JsonSyntaxException e) {
-                // This might be binary data sent as text - log only if it's not binary-looking data
-                if (!message.matches("^[A-Za-z0-9+/=]+$")) {
-                    VoiceChatMod.LOGGER.warn("Invalid JSON message format");
+                try {
+                    JsonObject jsonMessage = GSON.fromJson(completeMessage, JsonObject.class);
+                    
+                    if (jsonMessage.has("status") && jsonMessage.has("message")) {
+                        String status = jsonMessage.get("status").getAsString();
+                        JsonObject messageObj = jsonMessage.getAsJsonObject("message");
+                        String action = messageObj.has("action") ? messageObj.get("action").getAsString() : "unknown";
+                        
+                        if (!"PROCESSED".equals(status)) {
+                            VoiceChatMod.LOGGER.warn("Received message with non-processed status: {}", status);
+                        }
+                        
+                        switch (action) {
+                            case ACTION_SEND_AUDIO:
+                            case ACTION_AUDIO:
+                                if ("PROCESSED".equals(status)) {
+                                    handleBroadcastAudio(messageObj);
+                                }
+                                break;
+                            case "error":
+                                VoiceChatMod.LOGGER.error("Server error: {}", 
+                                    messageObj.has("message") ? messageObj.get("message").getAsString() : "No details");
+                                break;
+                            case "pong":
+                                VoiceChatMod.LOGGER.debug("Received pong response");
+                                break;
+                            default:
+                                VoiceChatMod.LOGGER.warn("Unknown action received: {}", action);
+                        }
+                    } else {
+                        String action = jsonMessage.has("action") ? jsonMessage.get("action").getAsString() : "unknown";
+                        
+                        switch (action) {
+                            case ACTION_SEND_AUDIO:
+                            case ACTION_AUDIO:
+                                handleBroadcastAudio(jsonMessage);
+                                break;
+                            case "pong":
+                                VoiceChatMod.LOGGER.debug("Received pong response");
+                                break;
+                            case "error":
+                                VoiceChatMod.LOGGER.error("Server error: {}", 
+                                    jsonMessage.has("message") ? jsonMessage.get("message").getAsString() : "No details");
+                                break;
+                            default:
+                                VoiceChatMod.LOGGER.warn("Unknown direct message action: {}", action);
+                        }
+                    }
+                } catch (com.google.gson.JsonSyntaxException e) {
+                    VoiceChatMod.LOGGER.error("Invalid JSON message format: {}", e.getMessage());
                 }
             }
         } catch (Exception e) {
-            VoiceChatMod.LOGGER.error("WebSocket text processing error", e);
+            VoiceChatMod.LOGGER.error("WebSocket text processing error: {}", e.getMessage());
+            messageBuffer = new StringBuilder();
         }
         webSocket.request(1);
         return CompletableFuture.completedFuture(null);
@@ -247,56 +237,49 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
      */
     private void handleBroadcastAudio(JsonObject message) {
         try {
-            // Log the full message for debugging
-            VoiceChatMod.LOGGER.info("Processing broadcast message: {}", message.toString());
+            JsonObject dataObj = message.has("data") && message.get("data").isJsonObject() ?
+                message.getAsJsonObject("data") :
+                message;
             
-            JsonObject data = message.getAsJsonObject("data");
-            String audio = data.get("audio").getAsString();
-            String author = data.get("author").getAsString();
-            String timestamp = data.get("timestamp").getAsString();
+            String audio = dataObj.has("audio") ? 
+                dataObj.get("audio").getAsString() :
+                dataObj.get("data").getAsString();
+                
+            String author = dataObj.get("author").getAsString();
+            String timestamp = dataObj.has("timestamp") ? 
+                dataObj.get("timestamp").getAsString() : 
+                java.time.Instant.now().toString();
             
-            // Optional fields with defaults
-            String format = data.has("format") ? data.get("format").getAsString() : "pcm";
-            String encoding = data.has("encoding") ? data.get("encoding").getAsString() : "base64";
+            String format = "pcm";
+            String encoding = "base64";
 
-            VoiceChatMod.LOGGER.info("Processing broadcast - Author: {}, Timestamp: {}, Format: {}, Size: {} bytes", 
-                author, timestamp, format, audio.length());
-            
-            // Get current player name
             String currentPlayer = VoiceChatMod.getCurrentPlayerName();
             
-            // Enhanced logging for echo behavior
-            if (author.equals(currentPlayer)) {
-                VoiceChatMod.LOGGER.debug("Received own audio message - Echo enabled: {}", 
-                    VoiceChatMod.ClientModEvents.isEchoEnabled());
-            }
-            
-            // Only process if:
-            // 1. The message is not from us, OR
-            // 2. Echo is enabled and the message is from us
             if (!author.equals(currentPlayer) || VoiceChatMod.ClientModEvents.isEchoEnabled()) {
-                // Process on the main Minecraft thread
                 Minecraft.getInstance().execute(() -> {
                     try {
-                        VoiceChatMod.LOGGER.info("Executing audio processing on main thread");
                         VoiceChatMod.ClientModEvents.processReceivedAudio(
                             audio, format, encoding, author, timestamp, "broadcast"
                         );
-                        VoiceChatMod.LOGGER.debug("Audio processing completed successfully");
                     } catch (Exception e) {
-                        VoiceChatMod.LOGGER.error("Error processing broadcast audio: {}", e.getMessage(), e);
+                        VoiceChatMod.LOGGER.error("Error processing broadcast audio: {}", e.getMessage());
                     }
                 });
-            } else {
-                VoiceChatMod.LOGGER.info("Skipping own audio (echo disabled) from author: {}", author);
             }
         } catch (Exception e) {
-            VoiceChatMod.LOGGER.error("Error handling broadcast message: {}", e.getMessage(), e);
+            VoiceChatMod.LOGGER.error("Error handling broadcast message: {}", e.getMessage());
         }
     }
 
-    private void sendPingMessage() {
-        if (!isConnected.get() || webSocket == null) return;
+    /**
+     * Sends a ping message to the server to test the connection.
+     * This is meant to be called manually through the /vc ping command.
+     */
+    public void sendPingMessage() {
+        if (!isConnected.get() || webSocket == null) {
+            VoiceChatMod.LOGGER.error("Cannot send ping: Not connected to Voice Gateway");
+            return;
+        }
         
         try {
             JsonObject ping = new JsonObject();
@@ -327,7 +310,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     private void handleConnectionFailure() {
         VoiceChatMod.LOGGER.warn("Connection failure detected");
         isConnected.set(false);
-        stopPingScheduler();
         attemptReconnect();
     }
 
@@ -355,8 +337,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
                         VoiceChatMod.LOGGER.error("Failed to send test message: {}", error.getMessage());
                     } else {
                         VoiceChatMod.LOGGER.info("Test message sent successfully");
-                        // Start the ping scheduler only after successful test message
-                        startPingScheduler();
                     }
                 });
         } catch (Exception e) {
@@ -368,7 +348,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
         VoiceChatMod.LOGGER.info("WebSocket closed: {} - {}", statusCode, reason);
         isConnected.set(false);
-        stopPingScheduler();
         attemptReconnect();
         return CompletableFuture.completedFuture(null);
     }
@@ -377,7 +356,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
     public void onError(WebSocket webSocket, Throwable error) {
         VoiceChatMod.LOGGER.error("WebSocket error: {}", error.getMessage());
         isConnected.set(false);
-        stopPingScheduler();
         attemptReconnect();
     }
 
@@ -394,7 +372,6 @@ public class VoiceGatewayClient implements WebSocket.Listener, AudioSender {
 
     public void disconnect() {
         if (webSocket != null) {
-            stopPingScheduler();
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Client disconnecting");
             webSocket = null;
             isConnected.set(false);
